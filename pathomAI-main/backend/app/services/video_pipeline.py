@@ -1,3 +1,5 @@
+# This module defines the main processing pipeline for video jobs, including audio extraction, transcription, and analysis. It interacts with the database to update job statuses and handles errors gracefully.
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

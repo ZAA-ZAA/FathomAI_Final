@@ -1,3 +1,5 @@
+#AI agents lite - transcript analysis service
+
 from __future__ import annotations
 
 import json
@@ -19,15 +21,23 @@ class TranscriptAnalysisService:
         self.model = model or settings.default_model
 
     def analyze(self, request: TranscriptAnalysisRequest) -> TranscriptAnalysisResponse:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            response_format={"type": "json_object"},
-            messages=self._build_messages(request),
-        )
-        content = response.choices[0].message.content or "{}"
-        payload = json.loads(content)
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                response_format={"type": "json_object"},
+                messages=self._build_messages(request),
+            )
+            content = response.choices[0].message.content or "{}"
+            payload = json.loads(content)
+        except Exception as exc:
+            raise RuntimeError(f"Transcript analysis failed: {exc}") from exc
+
+        summary = str(payload.get("summary", "")).strip()
+        if not summary:
+            raise RuntimeError("Transcript analysis returned an empty summary")
+
         return TranscriptAnalysisResponse(
-            summary=str(payload.get("summary", "")).strip(),
+            summary=summary,
             action_items=self._normalize_action_items(payload.get("action_items", [])),
             sentiment=str(payload.get("sentiment", "neutral")).strip().lower() or "neutral",
         )

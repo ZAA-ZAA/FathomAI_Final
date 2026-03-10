@@ -27,9 +27,20 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
+  changePassword,
+  clearStoredAuthToken,
+  fetchCurrentUser,
   fetchVideoJob,
   fetchVideoJobs,
+  fetchVideoSourceUrl,
+  getStoredAuthToken,
+  retryVideoJob,
+  signIn,
+  signOut,
+  signUp,
+  updateProfile,
   uploadVideo,
+  type AuthUser,
   type VideoJob,
   type VideoJobStatus,
 } from './lib/api';
@@ -38,9 +49,11 @@ import {
 type Screen = 'landing' | 'auth' | 'dashboard' | 'analysis' | 'review' | 'history' | 'settings';
 
 interface UserProfile {
+  id: string;
   name: string;
   email: string;
-  isPro: boolean;
+  tenantId: string;
+  tenantName: string;
 }
 
 type LanguageHint = 'auto' | 'en' | 'tl';
@@ -100,6 +113,18 @@ const formatRelativeTime = (value: string) => {
   return formatter.format(diffDays, 'day');
 };
 
+const downloadJsonFile = (filename: string, payload: unknown) => {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
 const getStepFromStatus = (status: VideoJobStatus): ProcessingStep => {
   if (status === 'extracting_audio') {
     return 'Extracting';
@@ -118,6 +143,14 @@ const getStepFromStatus = (status: VideoJobStatus): ProcessingStep => {
 
 const isJobComplete = (status: VideoJobStatus) => status === 'completed';
 const isJobFailed = (status: VideoJobStatus) => status === 'failed';
+
+const mapAuthUserToProfile = (user: AuthUser): UserProfile => ({
+  id: user.id,
+  name: user.full_name,
+  email: user.email,
+  tenantId: user.tenant_id,
+  tenantName: user.tenant_name,
+});
 
 // --- Components ---
 
@@ -205,7 +238,7 @@ const Sidebar = ({ activeTab, onNavigate, user, onLogout }: { activeTab: Screen;
         </div>
         <div className="flex-1 overflow-hidden">
           <p className="text-sm font-medium truncate">{user?.name || 'User'}</p>
-          <p className="text-xs text-white/40 truncate">{user?.isPro ? 'Pro Member' : 'Free Plan'}</p>
+          <p className="text-xs text-white/40 truncate">{user?.tenantName || 'No workspace selected'}</p>
         </div>
         <LogOut 
           size={18} 
@@ -239,7 +272,7 @@ const DemoModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
           initial={{ opacity: 0, scale: 0.9, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.9, y: 20 }}
-          className="glass-panel w-full max-w-4xl aspect-video relative z-10 overflow-hidden"
+          className="glass-panel relative z-10 w-full max-w-3xl overflow-hidden p-8"
         >
           <button 
             onClick={onClose}
@@ -247,10 +280,35 @@ const DemoModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
           >
             <LogOut size={20} className="rotate-180" />
           </button>
-          <div className="w-full h-full bg-black flex items-center justify-center">
-            <div className="text-center space-y-4">
-              <Play size={64} className="text-neon-cyan mx-auto animate-pulse" />
-              <p className="text-white/40 font-mono tracking-widest">ZENITH_DEMO_REEL.MP4</p>
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <p className="text-xs font-bold uppercase tracking-[0.3em] text-neon-cyan">Platform Flow</p>
+              <h3 className="text-3xl font-bold">What happens after you upload a video</h3>
+              <p className="text-sm text-white/50">
+                The app stores the video, extracts WAV audio with FFmpeg, sends the audio to Whisper, then forwards the transcript to the agent service for summary, action items, and sentiment.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <Upload className="mb-3 text-neon-cyan" size={24} />
+                <h4 className="mb-2 font-bold">1. Upload</h4>
+                <p className="text-sm text-white/50">Video is saved in the backend and a tenant-scoped processing job is created.</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <FileText className="mb-3 text-neon-cyan" size={24} />
+                <h4 className="mb-2 font-bold">2. Transcribe</h4>
+                <p className="text-sm text-white/50">FFmpeg extracts audio, then Whisper returns the transcript and detected language.</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <Sparkles className="mb-3 text-neon-cyan" size={24} />
+                <h4 className="mb-2 font-bold">3. Analyze</h4>
+                <p className="text-sm text-white/50">The agent service uses `gpt-4o` to generate summary, action items, and sentiment.</p>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button variant="neon" onClick={onClose}>Close Overview</Button>
             </div>
           </div>
         </motion.div>
@@ -261,8 +319,75 @@ const DemoModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
 
 // --- Screens ---
 
-const AuthScreen = ({ initialMode = 'signin', onAuthSuccess }: { initialMode?: 'signin' | 'signup', onAuthSuccess: () => void }) => {
+const AuthScreen = ({
+  initialMode = 'signin',
+  onAuthSuccess,
+}: {
+  initialMode?: 'signin' | 'signup';
+  onAuthSuccess: (user: UserProfile) => void;
+}) => {
   const [mode, setMode] = useState(initialMode);
+  const [fullName, setFullName] = useState('');
+  const [tenantName, setTenantName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const resetForm = () => {
+    setFullName('');
+    setTenantName('');
+    setEmail('');
+    setPassword('');
+    setErrorMessage(null);
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setErrorMessage(null);
+
+    if (mode === 'signup') {
+      if (fullName.trim().length < 2) {
+        setErrorMessage('Full name must be at least 2 characters.');
+        return;
+      }
+      if (tenantName.trim().length < 2) {
+        setErrorMessage('Workspace name must be at least 2 characters.');
+        return;
+      }
+    }
+
+    if (!email.includes('@')) {
+      setErrorMessage('Enter a valid email address.');
+      return;
+    }
+    if (password.length < 8) {
+      setErrorMessage('Password must be at least 8 characters.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const response = mode === 'signup'
+        ? await signUp({
+            full_name: fullName.trim(),
+            tenant_name: tenantName.trim(),
+            email: email.trim().toLowerCase(),
+            password,
+          })
+        : await signIn({
+            email: email.trim().toLowerCase(),
+            password,
+          });
+
+      resetForm();
+      onAuthSuccess(mapAuthUserToProfile(response.user));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Authentication failed');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
@@ -281,19 +406,78 @@ const AuthScreen = ({ initialMode = 'signin', onAuthSuccess }: { initialMode?: '
             {mode === 'signin' ? 'Welcome Back' : 'Create Account'}
           </h2>
           <p className="text-white/40 text-sm mt-2">
-            {mode === 'signin' ? 'Enter your credentials to access your account' : 'Create your account to start'}
+            {mode === 'signin' ? 'Enter your credentials to access your workspace' : 'Create a workspace and sign in'}
           </p>
         </div>
 
-        <form className="space-y-6" onSubmit={(e) => { e.preventDefault(); onAuthSuccess(); }}>
+        <form className="space-y-6" onSubmit={handleSubmit}>
           {mode === 'signup' && (
-            <Input label="Full Name" placeholder="Neil Armstrong" icon={User} />
+            <>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Full Name</label>
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+                  <input
+                    type="text"
+                    value={fullName}
+                    onChange={(event) => setFullName(event.target.value)}
+                    placeholder="Maria Santos"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Workspace Name</label>
+                <div className="relative">
+                  <LayoutDashboard className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+                  <input
+                    type="text"
+                    value={tenantName}
+                    onChange={(event) => setTenantName(event.target.value)}
+                    placeholder="Acme Product Team"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                  />
+                </div>
+              </div>
+            </>
           )}
-          <Input label="Email Address" type="email" placeholder="commander@zenith.ai" icon={Search} />
-          <Input label="Password" type="password" placeholder="••••••••" icon={Settings} />
+
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Email Address</label>
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@company.com"
+                className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Password</label>
+            <div className="relative">
+              <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Password with 8+ characters"
+                className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+              />
+            </div>
+          </div>
+
+          {errorMessage && (
+            <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {errorMessage}
+            </div>
+          )}
           
-          <Button variant="neon" className="w-full py-4 text-lg" type="submit">
-            {mode === 'signin' ? 'Sign In' : 'Create Account'}
+          <Button variant="neon" className="w-full py-4 text-lg" type="submit" disabled={isSubmitting}>
+            {isSubmitting ? 'Processing...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
           </Button>
         </form>
 
@@ -301,7 +485,10 @@ const AuthScreen = ({ initialMode = 'signin', onAuthSuccess }: { initialMode?: '
           <p className="text-white/40 text-sm">
             {mode === 'signin' ? "Don't have an account?" : "Already have an account?"}{' '}
             <button 
-              onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
+              onClick={() => {
+                setMode(mode === 'signin' ? 'signup' : 'signin');
+                resetForm();
+              }}
               className="text-neon-cyan hover:underline font-medium"
             >
               {mode === 'signin' ? 'Sign Up' : 'Sign In'}
@@ -323,14 +510,33 @@ const HistoryScreen = ({
   onOpenJob: (job: VideoJob) => void;
 }) => {
   const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | VideoJobStatus>('all');
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return jobs;
-    }
+    return jobs.filter((job) => {
+      const matchesQuery = !normalizedQuery || job.original_filename.toLowerCase().includes(normalizedQuery);
+      const matchesStatus = statusFilter === 'all' || job.status === statusFilter;
+      return matchesQuery && matchesStatus;
+    });
+  }, [jobs, query, statusFilter]);
 
-    return jobs.filter((job) => job.original_filename.toLowerCase().includes(normalizedQuery));
-  }, [jobs, query]);
+  const handleExportAll = () => {
+    downloadJsonFile(
+      `video-jobs-${new Date().toISOString().slice(0, 10)}.json`,
+      filteredJobs.map((job) => ({
+        id: job.id,
+        filename: job.original_filename,
+        status: job.status,
+        duration_seconds: job.duration_seconds,
+        created_at: job.created_at,
+        completed_at: job.completed_at,
+        sentiment: job.sentiment,
+        action_items: job.action_items,
+        summary: job.summary,
+        error_message: job.error_message,
+      })),
+    );
+  };
 
   return (
     <div className="flex-1 p-10 overflow-y-auto">
@@ -352,8 +558,20 @@ const HistoryScreen = ({
             />
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" className="px-4 py-2 text-xs">Filter</Button>
-            <Button variant="secondary" className="px-4 py-2 text-xs">Export All</Button>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as 'all' | VideoJobStatus)}
+              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white focus:outline-none focus:border-neon-cyan/50"
+            >
+              <option value="all" className="bg-midnight text-white">All Statuses</option>
+              <option value="queued" className="bg-midnight text-white">Queued</option>
+              <option value="extracting_audio" className="bg-midnight text-white">Extracting</option>
+              <option value="transcribing" className="bg-midnight text-white">Transcribing</option>
+              <option value="analyzing" className="bg-midnight text-white">Summarizing</option>
+              <option value="completed" className="bg-midnight text-white">Completed</option>
+              <option value="failed" className="bg-midnight text-white">Failed</option>
+            </select>
+            <Button variant="secondary" className="px-4 py-2 text-xs" onClick={handleExportAll} disabled={filteredJobs.length === 0}>Export JSON</Button>
           </div>
         </div>
         <table className="w-full text-left">
@@ -418,20 +636,95 @@ const HistoryScreen = ({
 const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUpdateUser: (updates: Partial<UserProfile>) => void }) => {
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
-  const [isSaved, setIsSaved] = useState(false);
-  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [tenantName, setTenantName] = useState(user?.tenantName || '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [securityMessage, setSecurityMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [securityError, setSecurityError] = useState<string | null>(null);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
 
-  const handleSave = () => {
-    onUpdateUser({ name, email });
-    setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 3000);
+  useEffect(() => {
+    setName(user?.name || '');
+    setEmail(user?.email || '');
+    setTenantName(user?.tenantName || '');
+  }, [user]);
+
+  const handleSaveProfile = async () => {
+    setProfileError(null);
+    setProfileMessage(null);
+
+    if (name.trim().length < 2) {
+      setProfileError('Full name must be at least 2 characters.');
+      return;
+    }
+    if (!email.includes('@')) {
+      setProfileError('Enter a valid email address.');
+      return;
+    }
+    if (tenantName.trim().length < 2) {
+      setProfileError('Workspace name must be at least 2 characters.');
+      return;
+    }
+
+    setIsSavingProfile(true);
+    try {
+      const updatedUser = await updateProfile({
+        full_name: name.trim(),
+        email: email.trim().toLowerCase(),
+        tenant_name: tenantName.trim(),
+      });
+      onUpdateUser(mapAuthUserToProfile(updatedUser));
+      setProfileMessage('Profile updated');
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : 'Unable to update profile');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    setSecurityError(null);
+    setSecurityMessage(null);
+
+    if (currentPassword.length < 8) {
+      setSecurityError('Enter your current password.');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setSecurityError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setSecurityError('New password and confirmation must match.');
+      return;
+    }
+
+    setIsSavingPassword(true);
+    try {
+      await changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setSecurityMessage('Password updated');
+    } catch (error) {
+      setSecurityError(error instanceof Error ? error.message : 'Unable to update password');
+    } finally {
+      setIsSavingPassword(false);
+    }
   };
 
   return (
     <div className="flex-1 p-10 overflow-y-auto">
       <header className="mb-10">
         <h1 className="text-4xl font-bold mb-2">Account Settings</h1>
-        <p className="text-white/50">Manage your account and preferences</p>
+        <p className="text-white/50">Manage your profile, workspace name, and password.</p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -446,8 +739,8 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
                   <input 
                     type="text" 
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Neil Armstrong"
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Your full name"
                     className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
                   />
                 </div>
@@ -459,188 +752,99 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
                   <input 
                     type="email" 
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="commander@zenith.ai"
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="your@company.com"
                     className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
                   />
                 </div>
               </div>
             </div>
-            <div className="mt-8 flex items-center gap-4">
-              <Button variant="neon" onClick={handleSave}>Save Changes</Button>
-              <AnimatePresence>
-                {isSaved && (
-                  <motion.span 
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0 }}
-                    className="text-emerald-500 text-sm font-medium flex items-center gap-2"
-                  >
-                    <CheckCircle2 size={16} /> Changes saved successfully
-                  </motion.span>
-                )}
-              </AnimatePresence>
+            <div className="mt-6 space-y-2">
+              <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Workspace Name</label>
+              <div className="relative">
+                <LayoutDashboard className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+                <input 
+                  type="text" 
+                  value={tenantName}
+                  onChange={(event) => setTenantName(event.target.value)}
+                  placeholder="Your workspace name"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                />
+              </div>
+            </div>
+            <div className="mt-8 flex items-center gap-4 flex-wrap">
+              <Button variant="neon" onClick={handleSaveProfile} disabled={isSavingProfile}>{isSavingProfile ? 'Saving...' : 'Save Changes'}</Button>
+              {profileMessage && <span className="text-emerald-500 text-sm font-medium">{profileMessage}</span>}
+              {profileError && <span className="text-red-400 text-sm font-medium">{profileError}</span>}
             </div>
           </section>
 
           <section className="glass-panel p-8">
             <h3 className="text-xl font-bold mb-6">Security</h3>
             <div className="space-y-6">
-              <Input label="Current Password" type="password" placeholder="••••••••" icon={Settings} />
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Current Password</label>
+                <div className="relative">
+                  <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                    placeholder="Enter current password"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                  />
+                </div>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Input label="New Password" type="password" placeholder="••••••••" icon={Settings} />
-                <Input label="Confirm New Password" type="password" placeholder="••••••••" icon={Settings} />
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">New Password</label>
+                  <div className="relative">
+                    <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      placeholder="Enter new password"
+                      className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-white/40 uppercase tracking-widest ml-1">Confirm New Password</label>
+                  <div className="relative">
+                    <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30" size={18} />
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(event) => setConfirmPassword(event.target.value)}
+                      placeholder="Confirm new password"
+                      className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-white placeholder:text-white/20 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
-            <Button variant="secondary" className="mt-8">Update Password</Button>
+            <div className="mt-8 flex items-center gap-4 flex-wrap">
+              <Button variant="secondary" onClick={handleChangePassword} disabled={isSavingPassword}>{isSavingPassword ? 'Updating...' : 'Update Password'}</Button>
+              {securityMessage && <span className="text-emerald-500 text-sm font-medium">{securityMessage}</span>}
+              {securityError && <span className="text-red-400 text-sm font-medium">{securityError}</span>}
+            </div>
           </section>
         </div>
 
         <div className="space-y-8">
-          <section className="glass-panel p-8 border-red-500/20">
-            <h3 className="text-xl font-bold mb-4 text-red-500">Delete Account</h3>
-            <p className="text-sm text-white/40 mb-6">Once you delete your account, there is no going back. Please be certain.</p>
-            <Button 
-              variant="ghost" 
-              className="w-full text-red-500 hover:bg-red-500/10 border border-red-500/20"
-              onClick={() => setIsDeleteModalOpen(true)}
-            >
-              Delete Account
-            </Button>
+          <section className="glass-panel p-8 border-white/10">
+            <h3 className="text-xl font-bold mb-4">Workspace Scope</h3>
+            <p className="text-sm text-white/40 mb-4">Your workspace name is the tenant identity for this project. Uploaded videos and AI analysis results are isolated by workspace.</p>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
+              Workspace: <span className="text-white font-medium">{tenantName || 'Not available'}</span>
+            </div>
           </section>
         </div>
       </div>
-
-      {/* Delete Confirmation Modal */}
-      <AnimatePresence>
-        {isDeleteModalOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsDeleteModalOpen(false)}
-              className="absolute inset-0 bg-midnight/80 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="glass-panel w-full max-w-md p-8 relative z-10"
-            >
-              <h3 className="text-2xl font-bold mb-4 text-red-500">Are you absolutely sure?</h3>
-              <p className="text-white/60 mb-8">
-                This action cannot be undone. This will permanently delete your account
-                and remove your data from our servers.
-              </p>
-              <div className="flex gap-4">
-                <Button variant="secondary" className="flex-1" onClick={() => setIsDeleteModalOpen(false)}>Cancel</Button>
-                <Button variant="ghost" className="flex-1 bg-red-500 hover:bg-red-600 text-white border-none" onClick={() => window.location.reload()}>
-                  Delete
-                </Button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };
-
-const LandingPage = ({ onStart, onWatchDemo }: { onStart: (mode: 'signin' | 'signup') => void; onWatchDemo: () => void }) => (
-  <div className="min-h-screen flex flex-col">
-    {/* Navigation */}
-    <nav className="flex items-center justify-between px-8 py-6 max-w-7xl mx-auto w-full">
-      <div className="flex items-center gap-3">
-        <div className="w-8 h-8 bg-gradient-to-br from-neon-cyan to-neon-purple rounded-lg flex items-center justify-center">
-          <Rocket className="text-midnight w-5 h-5" />
-        </div>
-        <span className="text-lg font-bold tracking-tighter">ZENITH AI</span>
-      </div>
-      <div className="flex items-center gap-8">
-        <a href="#" className="text-sm text-white/60 hover:text-white transition-colors">Features</a>
-        <Button variant="secondary" className="px-5 py-2 text-sm" onClick={() => onStart('signin')}>Sign In</Button>
-      </div>
-    </nav>
-
-    {/* Hero Section */}
-    <main className="flex-1 flex flex-col items-center justify-center px-6 text-center relative overflow-hidden">
-      {/* Background Glows */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] cosmic-gradient opacity-30 pointer-events-none" />
-      
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-        className="relative z-10 max-w-4xl"
-      >
-        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-medium text-neon-cyan mb-8">
-          <Sparkles size={14} />
-          <span>NEXT-GEN VIDEO INTELLIGENCE</span>
-        </div>
-        <h1 className="text-7xl md:text-8xl font-bold tracking-tight mb-6 leading-[1.1]">
-          Summarize the <br />
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-neon-purple">World of Video</span>
-        </h1>
-        <p className="text-xl text-white/60 mb-10 max-w-2xl mx-auto leading-relaxed">
-          Zenith AI transforms hours of footage into actionable insights in seconds. 
-          The ultimate tool for creators and researchers.
-        </p>
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Button variant="neon" className="text-lg px-10 py-4" onClick={() => onStart('signup')}>
-            Start for Free <ArrowRight size={20} />
-          </Button>
-          <Button variant="ghost" className="text-lg px-10 py-4" onClick={onWatchDemo}>
-            Watch Demo
-          </Button>
-        </div>
-      </motion.div>
-
-      {/* Astronaut Illustration Placeholder */}
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.4, duration: 1 }}
-        className="mt-20 relative"
-      >
-        <div className="w-64 h-64 md:w-80 md:h-80 rounded-full bg-gradient-to-b from-white/10 to-transparent flex items-center justify-center border border-white/5 relative">
-          <div className="absolute inset-0 bg-neon-purple/20 blur-3xl rounded-full animate-pulse" />
-          <Rocket size={120} className="text-white/20 rotate-45" />
-          <div className="absolute -top-4 -right-4 w-12 h-12 bg-neon-cyan/20 rounded-full blur-xl" />
-          <div className="absolute bottom-8 -left-8 w-16 h-16 bg-neon-purple/30 rounded-full blur-2xl" />
-        </div>
-      </motion.div>
-    </main>
-
-    {/* 3-Step Guide */}
-    <section className="py-24 px-6 bg-white/[0.02] border-t border-white/5">
-      <div className="max-w-7xl mx-auto">
-        <h2 className="text-3xl font-bold text-center mb-16">The Zenith Workflow</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
-          {[
-            { icon: Upload, title: 'Upload', desc: 'Drop your video files into our secure cloud storage.' },
-            { icon: Zap, title: 'Summarize', desc: 'Our AI engines extract the core essence of your content.' },
-            { icon: FileText, title: 'Transcript', desc: 'Receive a searchable, high-fidelity transcript instantly.' }
-          ].map((step, i) => (
-            <div key={i} className="flex flex-col items-center text-center group">
-              <div className="w-16 h-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mb-6 group-hover:border-neon-cyan/50 transition-colors">
-                <step.icon className="text-neon-cyan" size={32} />
-              </div>
-              <h3 className="text-xl font-bold mb-3">{step.title}</h3>
-              <p className="text-white/50">{step.desc}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-
-    {/* Footer */}
-    <footer className="py-12 px-8 border-t border-white/5 text-center text-white/40 text-sm">
-      <p>&copy; 2024 Zenith AI. All rights reserved.</p>
-    </footer>
-  </div>
-);
-
 const SkeletonRow = () => (
   <tr className="animate-pulse">
     <td className="px-6 py-4 flex items-center gap-3">
@@ -822,17 +1026,23 @@ const Dashboard = ({
 const AnalysisScreen = ({
   jobId,
   onComplete,
+  onRetry,
+  onAuthError,
   onOpenHistory,
 }: {
   jobId: string | null;
   onComplete: (job: VideoJob) => void;
+  onRetry: (jobId: string) => Promise<void>;
+  onAuthError: (message: string) => void;
   onOpenHistory: () => void;
 }) => {
   const [job, setJob] = useState<VideoJob | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   useEffect(() => {
     if (!jobId) {
+      setJob(null);
       return undefined;
     }
 
@@ -864,7 +1074,9 @@ const AnalysisScreen = ({
           return;
         }
 
-        setErrorMessage(error instanceof Error ? error.message : 'Unable to load job status');
+        const message = error instanceof Error ? error.message : 'Unable to load job status';
+        onAuthError(message);
+        setErrorMessage(message);
         timeoutId = window.setTimeout(pollJob, 4000);
       }
     };
@@ -877,7 +1089,35 @@ const AnalysisScreen = ({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [jobId, onComplete]);
+  }, [jobId, onAuthError, onComplete]);
+
+  const handleRetry = async () => {
+    if (!jobId) {
+      return;
+    }
+
+    setIsRetrying(true);
+    setErrorMessage(null);
+    try {
+      await onRetry(jobId);
+      setJob((currentJob) => currentJob ? {
+        ...currentJob,
+        status: 'queued',
+        error_message: null,
+        summary: null,
+        sentiment: null,
+        action_items: [],
+        transcript: null,
+        completed_at: null,
+      } : currentJob);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to retry job';
+      onAuthError(message);
+      setErrorMessage(message);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   const currentStatus = job?.status ?? 'queued';
   const step = getStepFromStatus(currentStatus);
@@ -944,6 +1184,9 @@ const AnalysisScreen = ({
           )}
           {isFailed && (
             <div className="flex items-center justify-center gap-4">
+              <Button variant="neon" onClick={handleRetry} disabled={isRetrying}>
+                {isRetrying ? 'Retrying...' : 'Retry Processing'}
+              </Button>
               <Button variant="secondary" onClick={onOpenHistory}>Open History</Button>
             </div>
           )}
@@ -957,6 +1200,9 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   const [activeTab, setActiveTab] = useState<'summary' | 'transcript'>('summary');
   const [copied, setCopied] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [videoSourceUrl, setVideoSourceUrl] = useState<string | null>(null);
+  const [videoSourceError, setVideoSourceError] = useState<string | null>(null);
+  const [isVideoLoading, setIsVideoLoading] = useState(false);
 
   const handleExportPDF = () => {
     window.print();
@@ -964,26 +1210,72 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
 
   const actionItems = job?.action_items ?? [];
   const summaryText = job?.summary ?? 'No summary generated yet.';
-  const transcriptEntries = useMemo(() => {
+  const allTranscriptEntries = useMemo(() => {
     const transcript = job?.transcript ?? '';
-    const lines = transcript
+    return transcript
       .split(/\n+/)
       .map((line) => line.trim())
       .filter(Boolean);
+  }, [job?.transcript]);
 
+  const transcriptEntries = useMemo(() => {
     if (!searchTerm.trim()) {
-      return lines;
+      return allTranscriptEntries;
     }
 
     const normalizedSearch = searchTerm.toLowerCase();
-    return lines.filter((line) => line.toLowerCase().includes(normalizedSearch));
-  }, [job?.transcript, searchTerm]);
+    return allTranscriptEntries.filter((line) => line.toLowerCase().includes(normalizedSearch));
+  }, [allTranscriptEntries, searchTerm]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(summaryText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  useEffect(() => {
+    if (!job?.id) {
+      setVideoSourceUrl(null);
+      setVideoSourceError(null);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let currentUrl: string | null = null;
+
+    const loadVideoSource = async () => {
+      setIsVideoLoading(true);
+      setVideoSourceError(null);
+      try {
+        const sourceUrl = await fetchVideoSourceUrl(job.id);
+        if (isCancelled) {
+          URL.revokeObjectURL(sourceUrl);
+          return;
+        }
+
+        currentUrl = sourceUrl;
+        setVideoSourceUrl(sourceUrl);
+      } catch (error) {
+        if (!isCancelled) {
+          setVideoSourceError(error instanceof Error ? error.message : 'Unable to load video preview');
+          setVideoSourceUrl(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsVideoLoading(false);
+        }
+      }
+    };
+
+    void loadVideoSource();
+
+    return () => {
+      isCancelled = true;
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl);
+      }
+    };
+  }, [job?.id]);
 
   return (
     <div className="flex-1 p-10 overflow-hidden flex flex-col">
@@ -1005,33 +1297,33 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
         {/* Video Player Left */}
         <div className="flex-[1.5] flex flex-col gap-6 overflow-hidden print:hidden">
           <div className="aspect-video glass-panel overflow-hidden relative group">
-            <img 
-              src="https://picsum.photos/seed/space/1280/720" 
-              alt="Video Preview" 
-              className="w-full h-full object-cover opacity-60"
-              referrerPolicy="no-referrer"
-            />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-20 h-20 rounded-full bg-white/10 backdrop-blur-md flex items-center justify-center border border-white/20 group-hover:scale-110 transition-transform cursor-pointer">
-                <Play className="text-white fill-white ml-1" size={32} />
+            {videoSourceUrl ? (
+              <video
+                src={videoSourceUrl}
+                controls
+                preload="metadata"
+                className="w-full h-full bg-black object-contain"
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                <div className="text-center space-y-3 px-6">
+                  <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border border-white/20 bg-white/10 backdrop-blur-md">
+                    <Play className="text-white fill-white ml-1" size={32} />
+                  </div>
+                  <p className="text-sm text-white/60">
+                    {isVideoLoading ? 'Loading uploaded video...' : (videoSourceError ?? 'Video preview is unavailable')}
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
             {/* Controls Overlay */}
-            <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-midnight to-transparent">
-              <div className="h-1.5 w-full bg-white/20 rounded-full mb-4 overflow-hidden">
-                <div className="h-full w-1/3 bg-neon-cyan" />
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-4">
-                  <Play size={18} />
-                  <span>04:12 / 12:05</span>
-                </div>
-                <div className="flex items-center gap-4">
-                  <Settings size={18} />
-                  <LayoutDashboard size={18} />
+            {!videoSourceUrl && (
+              <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-midnight to-transparent">
+                <div className="text-sm text-white/50">
+                  Uploaded source: {job?.original_filename ?? 'Unavailable'}
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           <div className="glass-panel p-6">
@@ -1042,7 +1334,7 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
             <div className="grid grid-cols-3 gap-4">
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
                 <p className="text-xs text-white/40 mb-1">Transcript Lines</p>
-                <p className="text-lg font-bold">{transcriptEntries.length}</p>
+                <p className="text-lg font-bold">{allTranscriptEntries.length}</p>
               </div>
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
                 <p className="text-xs text-white/40 mb-1">Sentiment</p>
@@ -1188,6 +1480,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [isDemoOpen, setIsDemoOpen] = useState(false);
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [isAuthInitializing, setIsAuthInitializing] = useState(true);
   const [jobs, setJobs] = useState<VideoJob[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [jobsError, setJobsError] = useState<string | null>(null);
@@ -1195,7 +1488,21 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState<VideoJob | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
+  const handleUnauthorized = useCallback((message: string) => {
+    if (['Authentication required', 'Invalid session', 'Session expired'].includes(message)) {
+      clearStoredAuthToken();
+      setUser(null);
+      setCurrentScreen('auth');
+    }
+  }, []);
+
   const loadJobs = useCallback(async () => {
+    if (!user) {
+      setJobs([]);
+      setJobsLoading(false);
+      return;
+    }
+
     setJobsLoading(true);
     try {
       const jobList = await fetchVideoJobs();
@@ -1210,27 +1517,55 @@ export default function App() {
         return refreshedJob ? { ...currentSelectedJob, ...refreshedJob } : currentSelectedJob;
       });
     } catch (error) {
-      setJobsError(error instanceof Error ? error.message : 'Unable to load video jobs');
+      const message = error instanceof Error ? error.message : 'Unable to load video jobs';
+      handleUnauthorized(message);
+      setJobsError(message);
     } finally {
       setJobsLoading(false);
     }
+  }, [handleUnauthorized, user]);
+
+  useEffect(() => {
+    const bootstrapAuth = async () => {
+      if (!getStoredAuthToken()) {
+        setIsAuthInitializing(false);
+        return;
+      }
+
+      try {
+        const currentUser = await fetchCurrentUser();
+        setUser(mapAuthUserToProfile(currentUser));
+        setCurrentScreen('dashboard');
+      } catch {
+        clearStoredAuthToken();
+      } finally {
+        setIsAuthInitializing(false);
+      }
+    };
+
+    void bootstrapAuth();
   }, []);
 
   useEffect(() => {
-    void loadJobs();
-  }, [loadJobs]);
+    if (user) {
+      void loadJobs();
+    } else {
+      setJobs([]);
+      setJobsLoading(false);
+    }
+  }, [loadJobs, user]);
 
-  const handleAuthSuccess = () => {
-    setUser({
-      name: 'Neil Armstrong',
-      email: 'commander@zenith.ai',
-      isPro: true
-    });
+  const handleAuthSuccess = (authenticatedUser: UserProfile) => {
+    setUser(authenticatedUser);
     setCurrentScreen('dashboard');
   };
 
   const handleLogout = () => {
+    void signOut().catch(() => undefined);
     setUser(null);
+    setJobs([]);
+    setSelectedJob(null);
+    setActiveJobId(null);
     setCurrentScreen('landing');
   };
 
@@ -1239,6 +1574,12 @@ export default function App() {
   };
 
   const handleUpload = useCallback(async (file: File, languageHint: LanguageHint) => {
+    if (!user) {
+      setJobsError('Sign in before uploading a video.');
+      setCurrentScreen('auth');
+      return;
+    }
+
     setIsUploading(true);
     setJobsError(null);
 
@@ -1249,11 +1590,13 @@ export default function App() {
       setCurrentScreen('analysis');
       void loadJobs();
     } catch (error) {
-      setJobsError(error instanceof Error ? error.message : 'Upload failed');
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      handleUnauthorized(message);
+      setJobsError(message);
     } finally {
       setIsUploading(false);
     }
-  }, [loadJobs]);
+  }, [handleUnauthorized, loadJobs, user]);
 
   const handleOpenJob = useCallback(async (job: VideoJob) => {
     setActiveJobId(job.id);
@@ -1261,11 +1604,14 @@ export default function App() {
       const detailedJob = await fetchVideoJob(job.id);
       setSelectedJob(detailedJob);
       setCurrentScreen(detailedJob.status === 'completed' ? 'review' : 'analysis');
-    } catch {
+    } catch (error) {
+      if (error instanceof Error) {
+        handleUnauthorized(error.message);
+      }
       setSelectedJob(job);
       setCurrentScreen(job.status === 'completed' ? 'review' : 'analysis');
     }
-  }, []);
+  }, [handleUnauthorized]);
 
   const handleAnalysisComplete = useCallback(async (job: VideoJob) => {
     setSelectedJob(job);
@@ -1273,6 +1619,23 @@ export default function App() {
     await loadJobs();
     setCurrentScreen('review');
   }, [loadJobs]);
+
+  const handleRetryJob = useCallback(async (jobId: string) => {
+    await retryVideoJob(jobId);
+    const refreshedJob = await fetchVideoJob(jobId);
+    setSelectedJob(refreshedJob);
+    setActiveJobId(refreshedJob.id);
+    await loadJobs();
+    setCurrentScreen('analysis');
+  }, [loadJobs]);
+
+  if (isAuthInitializing) {
+    return (
+      <div className="min-h-screen bg-midnight text-white flex items-center justify-center">
+        <div className="glass-panel px-8 py-6 text-sm text-white/60">Loading workspace...</div>
+      </div>
+    );
+  }
 
   const renderScreen = () => {
     switch (currentScreen) {
@@ -1316,6 +1679,8 @@ export default function App() {
             <AnalysisScreen
               jobId={activeJobId}
               onComplete={handleAnalysisComplete}
+              onRetry={handleRetryJob}
+              onAuthError={handleUnauthorized}
               onOpenHistory={() => {
                 void loadJobs();
                 setCurrentScreen('history');
@@ -1352,3 +1717,4 @@ export default function App() {
     </div>
   );
 }
+

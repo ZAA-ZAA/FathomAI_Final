@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from app.api.routes.auth import router as auth_router
 from app.api.routes.videos import router as video_router
 from app.core.config import settings
 from app.db import Base, engine
@@ -18,6 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(video_router)
 
 

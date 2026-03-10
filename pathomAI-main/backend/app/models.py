@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -23,10 +23,44 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(120))
+    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    full_name: Mapped[str] = mapped_column(String(120))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class VideoJob(Base):
     __tablename__ = "video_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     original_filename: Mapped[str] = mapped_column(String(255))
     stored_filename: Mapped[str] = mapped_column(String(255))
     storage_path: Mapped[str] = mapped_column(Text)
@@ -35,7 +69,7 @@ class VideoJob(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     language_hint: Mapped[str] = mapped_column(String(16), default="auto")
     detected_language: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default=JobStatus.QUEUED.value)
+    status: Mapped[str] = mapped_column(String(32), default=JobStatus.QUEUED.value, index=True)
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     sentiment: Mapped[str | None] = mapped_column(String(64), nullable=True)

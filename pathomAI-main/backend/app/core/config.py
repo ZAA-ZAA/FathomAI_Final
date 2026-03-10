@@ -29,6 +29,8 @@ class Settings:
     )
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     agent_service_url: str = os.getenv("AGENT_SERVICE_URL", "http://localhost:8001")
+    auth_session_ttl_hours: int = int(os.getenv("AUTH_SESSION_TTL_HOURS", "168"))
+    max_upload_size_bytes: int = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", str(500 * 1024 * 1024)))
     cors_origins: tuple[str, ...] = (
         "http://localhost:3000",
         "http://127.0.0.1:3000",

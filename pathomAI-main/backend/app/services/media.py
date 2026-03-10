@@ -1,3 +1,5 @@
+# converts the video audio to WAV format and extracts metadata using ffmpeg
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,13 +38,17 @@ def probe_video_metadata(video_path: Path) -> dict[str, Any]:
 
 def extract_audio(video_path: Path, audio_path: Path) -> Path:
     audio_path.parent.mkdir(parents=True, exist_ok=True)
-    (
-        ffmpeg
-        .input(str(video_path))
-        .output(str(audio_path), acodec="pcm_s16le", ac=1, ar="16000")
-        .overwrite_output()
-        .run(capture_stdout=True, capture_stderr=True)
-    )
+    try:
+        (
+            ffmpeg
+            .input(str(video_path))
+            .output(str(audio_path), acodec="pcm_s16le", ac=1, ar="16000")
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+    except ffmpeg.Error as exc:
+        error_output = exc.stderr.decode("utf-8", errors="ignore").strip() if exc.stderr else str(exc)
+        raise RuntimeError(f"Audio extraction failed: {error_output}") from exc
     return audio_path
 
 

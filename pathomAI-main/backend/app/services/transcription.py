@@ -1,3 +1,5 @@
+# uses whisper api to transcribe audio files, with support for language hints to improve accuracy in code-switched conversations
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,22 +21,29 @@ def transcribe_audio_file(audio_path: Path, language_hint: str) -> Transcription
     resolved_language = _resolve_language(language_hint)
     client = OpenAI(api_key=settings.openai_api_key)
 
-    with audio_path.open("rb") as audio_file:
-        request_kwargs = {
-            "model": "whisper-1",
-            "file": audio_file,
-            "response_format": "verbose_json",
-            "prompt": "The speaker may switch between English and Tagalog in the same conversation.",
-        }
-        if resolved_language is not None:
-            request_kwargs["language"] = resolved_language
+    try:
+        with audio_path.open("rb") as audio_file:
+            request_kwargs = {
+                "model": "whisper-1",
+                "file": audio_file,
+                "response_format": "verbose_json",
+                "prompt": "The speaker may switch between English and Tagalog in the same conversation.",
+            }
+            if resolved_language is not None:
+                request_kwargs["language"] = resolved_language
 
-        response = client.audio.transcriptions.create(
-            **request_kwargs,
-        )
+            response = client.audio.transcriptions.create(
+                **request_kwargs,
+            )
+    except Exception as exc:
+        raise WhisperTranscriptionError(f"Whisper transcription failed: {exc}") from exc
+
+    transcript = getattr(response, "text", "") or ""
+    if not transcript.strip():
+        raise WhisperTranscriptionError("Whisper returned an empty transcript")
 
     return TranscriptionResult(
-        transcript=getattr(response, "text", "") or "",
+        transcript=transcript,
         detected_language=getattr(response, "language", None),
     )
 
