@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { 
   Rocket, 
   Upload, 
@@ -26,6 +26,13 @@ import {
   Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import {
+  fetchVideoJob,
+  fetchVideoJobs,
+  uploadVideo,
+  type VideoJob,
+  type VideoJobStatus,
+} from './lib/api';
 
 // --- Types ---
 type Screen = 'landing' | 'auth' | 'dashboard' | 'analysis' | 'review' | 'history' | 'settings';
@@ -36,13 +43,81 @@ interface UserProfile {
   isPro: boolean;
 }
 
-interface Video {
-  id: string;
-  name: string;
-  status: 'Completed' | 'Processing' | 'Failed';
-  date: string;
-  duration: string;
-}
+type LanguageHint = 'auto' | 'en' | 'tl';
+type ProcessingStep = 'Uploading' | 'Extracting' | 'Transcribing' | 'Summarizing' | 'Failed';
+
+const statusLabels: Record<VideoJobStatus, string> = {
+  queued: 'Queued',
+  extracting_audio: 'Extracting',
+  transcribing: 'Transcribing',
+  analyzing: 'Summarizing',
+  completed: 'Completed',
+  failed: 'Failed',
+};
+
+const statusProgress: Record<VideoJobStatus, number> = {
+  queued: 10,
+  extracting_audio: 35,
+  transcribing: 65,
+  analyzing: 90,
+  completed: 100,
+  failed: 100,
+};
+
+const formatDuration = (seconds: number | null | undefined) => {
+  if (!seconds || Number.isNaN(seconds)) {
+    return '--:--';
+  }
+
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+  }
+
+  return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+};
+
+const formatRelativeTime = (value: string) => {
+  const date = new Date(value);
+  const diffMs = date.getTime() - Date.now();
+  const diffMinutes = Math.round(diffMs / 60000);
+  const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+
+  if (Math.abs(diffMinutes) < 60) {
+    return formatter.format(diffMinutes, 'minute');
+  }
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 24) {
+    return formatter.format(diffHours, 'hour');
+  }
+
+  const diffDays = Math.round(diffHours / 24);
+  return formatter.format(diffDays, 'day');
+};
+
+const getStepFromStatus = (status: VideoJobStatus): ProcessingStep => {
+  if (status === 'extracting_audio') {
+    return 'Extracting';
+  }
+  if (status === 'transcribing') {
+    return 'Transcribing';
+  }
+  if (status === 'analyzing' || status === 'completed') {
+    return 'Summarizing';
+  }
+  if (status === 'failed') {
+    return 'Failed';
+  }
+  return 'Uploading';
+};
+
+const isJobComplete = (status: VideoJobStatus) => status === 'completed';
+const isJobFailed = (status: VideoJobStatus) => status === 'failed';
 
 // --- Components ---
 
@@ -65,13 +140,15 @@ const Button = ({
   variant = 'primary', 
   className = '', 
   onClick,
-  type = 'button'
+  type = 'button',
+  disabled = false,
 }: { 
   children: React.ReactNode; 
   variant?: 'primary' | 'secondary' | 'ghost' | 'neon'; 
   className?: string;
   onClick?: () => void;
   type?: 'button' | 'submit';
+  disabled?: boolean;
 }) => {
   const baseStyles = "px-6 py-3 rounded-full font-medium transition-all duration-300 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 disabled:pointer-events-none";
   const variants = {
@@ -82,7 +159,7 @@ const Button = ({
   };
 
   return (
-    <button type={type} className={`${baseStyles} ${variants[variant]} ${className}`} onClick={onClick}>
+    <button type={type} className={`${baseStyles} ${variants[variant]} ${className}`} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );
@@ -236,15 +313,24 @@ const AuthScreen = ({ initialMode = 'signin', onAuthSuccess }: { initialMode?: '
   );
 };
 
-const HistoryScreen = ({ onViewReview, onNavigateToAnalysis }: { onViewReview: () => void; onNavigateToAnalysis: () => void }) => {
-  const historyVideos: Video[] = [
-    { id: '1', name: 'Product_Launch_Event.mp4', status: 'Completed', date: '2 hours ago', duration: '45:12' },
-    { id: '2', name: 'Deep_Space_Research_V2.mov', status: 'Completed', date: 'Yesterday', duration: '12:05' },
-    { id: '3', name: 'Team_Sync_March_09.mp4', status: 'Completed', date: '2 days ago', duration: '28:40' },
-    { id: '4', name: 'Marketing_Strategy_Q4.mp4', status: 'Completed', date: '3 days ago', duration: '15:20' },
-    { id: '5', name: 'User_Interview_01.mp4', status: 'Completed', date: '4 days ago', duration: '52:10' },
-    { id: '6', name: 'Technical_Deep_Dive.mov', status: 'Failed', date: '5 days ago', duration: '08:15' },
-  ];
+const HistoryScreen = ({
+  jobs,
+  isLoading,
+  onOpenJob,
+}: {
+  jobs: VideoJob[];
+  isLoading: boolean;
+  onOpenJob: (job: VideoJob) => void;
+}) => {
+  const [query, setQuery] = useState('');
+  const filteredJobs = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return jobs;
+    }
+
+    return jobs.filter((job) => job.original_filename.toLowerCase().includes(normalizedQuery));
+  }, [jobs, query]);
 
   return (
     <div className="flex-1 p-10 overflow-y-auto">
@@ -260,6 +346,8 @@ const HistoryScreen = ({ onViewReview, onNavigateToAnalysis }: { onViewReview: (
             <input 
               type="text" 
               placeholder="Search history..." 
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
               className="w-full bg-white/5 border border-white/10 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-neon-cyan/50 transition-colors"
             />
           </div>
@@ -278,32 +366,48 @@ const HistoryScreen = ({ onViewReview, onNavigateToAnalysis }: { onViewReview: (
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {historyVideos.map((video) => (
-              <tr 
-                key={video.id} 
-                className="hover:bg-white/5 transition-colors cursor-pointer group"
-                onClick={() => video.status === 'Completed' ? onViewReview() : onNavigateToAnalysis()}
-              >
-                <td className="px-6 py-4 flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center">
-                    <Play size={16} className="text-white/60" />
-                  </div>
-                  <span className="font-medium">{video.name}</span>
+            {isLoading ? (
+              <>
+                <SkeletonRow />
+                <SkeletonRow />
+                <SkeletonRow />
+              </>
+            ) : filteredJobs.length > 0 ? (
+              filteredJobs.map((job) => (
+                <tr 
+                  key={job.id} 
+                  className="hover:bg-white/5 transition-colors cursor-pointer group"
+                  onClick={() => onOpenJob(job)}
+                >
+                  <td className="px-6 py-4 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center">
+                      <Play size={16} className="text-white/60" />
+                    </div>
+                    <span className="font-medium">{job.original_filename}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                      isJobComplete(job.status)
+                        ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                        : isJobFailed(job.status)
+                          ? 'bg-red-500/10 text-red-500 border-red-500/20'
+                          : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                    }`}>
+                      {isJobComplete(job.status) ? <CheckCircle2 size={12} /> : <Zap size={12} />}
+                      {statusLabels[job.status]}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-white/60 text-sm">{formatDuration(job.duration_seconds)}</td>
+                  <td className="px-6 py-4 text-white/60 text-sm">{formatRelativeTime(job.created_at)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td className="px-6 py-10 text-center text-sm text-white/40" colSpan={4}>
+                  No video jobs found yet.
                 </td>
-                <td className="px-6 py-4">
-                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                    video.status === 'Completed' 
-                    ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' 
-                    : 'bg-red-500/10 text-red-500 border-red-500/20'
-                  }`}>
-                    {video.status === 'Completed' ? <CheckCircle2 size={12} /> : <Zap size={12} />}
-                    {video.status}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-white/60 text-sm">{video.duration}</td>
-                <td className="px-6 py-4 text-white/60 text-sm">{video.date}</td>
               </tr>
-            ))}
+            )}
           </tbody>
         </table>
       </div>
@@ -555,31 +659,39 @@ const SkeletonRow = () => (
   </tr>
 );
 
-const Dashboard = ({ onUpload, onViewReview, onViewAll, onNavigateToAnalysis }: { onUpload: () => void; onViewReview: () => void; onViewAll: () => void; onNavigateToAnalysis: () => void }) => {
+const Dashboard = ({
+  jobs,
+  isLoading,
+  isUploading,
+  uploadError,
+  onUpload,
+  onViewAll,
+  onOpenJob,
+}: {
+  jobs: VideoJob[];
+  isLoading: boolean;
+  isUploading: boolean;
+  uploadError: string | null;
+  onUpload: (file: File, languageHint: LanguageHint) => void;
+  onViewAll: () => void;
+  onOpenJob: (job: VideoJob) => void;
+}) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const recentVideos: Video[] = [
-    { id: '1', name: 'Product_Launch_Event.mp4', status: 'Completed', date: '2 hours ago', duration: '45:12' },
-    { id: '2', name: 'Research_Analysis_V2.mov', status: 'Completed', date: 'Yesterday', duration: '12:05' },
-    { id: '3', name: 'Team_Sync_March_09.mp4', status: 'Completed', date: '2 days ago', duration: '28:40' }
-  ];
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, []);
+  const [languageHint, setLanguageHint] = useState<LanguageHint>('auto');
+  const recentJobs = jobs.slice(0, 5);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      onUpload();
+      onUpload(file, languageHint);
     }
+    event.target.value = '';
   };
 
   const triggerUpload = () => {
-    fileInputRef.current?.click();
+    if (!isUploading) {
+      fileInputRef.current?.click();
+    }
   };
 
   return (
@@ -596,11 +708,28 @@ const Dashboard = ({ onUpload, onViewReview, onViewAll, onNavigateToAnalysis }: 
           <h1 className="text-4xl font-bold mb-2">Welcome back</h1>
           <p className="text-white/50">Ready to analyze your next video?</p>
         </div>
-        <Button variant="neon" onClick={triggerUpload} className="px-8 py-4 shadow-lg shadow-neon-cyan/20">
-          <Upload size={20} />
-          Upload Video
-        </Button>
+        <div className="flex items-center gap-3">
+          <select
+            value={languageHint}
+            onChange={(event) => setLanguageHint(event.target.value as LanguageHint)}
+            className="rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm text-white focus:outline-none focus:border-neon-cyan/50"
+          >
+            <option value="auto" className="bg-midnight text-white">Auto Detect</option>
+            <option value="en" className="bg-midnight text-white">English</option>
+            <option value="tl" className="bg-midnight text-white">Tagalog</option>
+          </select>
+          <Button variant="neon" onClick={triggerUpload} className="px-8 py-4 shadow-lg shadow-neon-cyan/20" disabled={isUploading}>
+            <Upload size={20} />
+            {isUploading ? 'Uploading...' : 'Upload Video'}
+          </Button>
+        </div>
       </header>
+
+      {uploadError && (
+        <div className="mb-6 rounded-2xl border border-red-500/20 bg-red-500/10 px-5 py-4 text-sm text-red-200">
+          {uploadError}
+        </div>
+      )}
 
       {/* Upload Zone */}
       <motion.div 
@@ -612,8 +741,8 @@ const Dashboard = ({ onUpload, onViewReview, onViewAll, onNavigateToAnalysis }: 
           <Upload className="text-neon-cyan" size={40} />
         </div>
         <h2 className="text-2xl font-bold mb-2">Upload New Video</h2>
-        <p className="text-white/40 mb-8">Drag and drop your files here, or click to browse</p>
-        <Button variant="secondary" className="group-hover:bg-white group-hover:text-midnight">
+        <p className="text-white/40 mb-8">Whisper transcription runs remotely and supports English plus Tagalog code-switching.</p>
+        <Button variant="secondary" className="group-hover:bg-white group-hover:text-midnight" disabled={isUploading}>
           Select Files
         </Button>
       </motion.div>
@@ -647,28 +776,40 @@ const Dashboard = ({ onUpload, onViewReview, onViewAll, onNavigateToAnalysis }: 
                   <SkeletonRow />
                 </>
               ) : (
-                recentVideos.map((video) => (
+                recentJobs.length > 0 ? recentJobs.map((job) => (
                   <tr 
-                    key={video.id} 
+                    key={job.id} 
                     className="hover:bg-white/5 transition-colors cursor-pointer group"
-                    onClick={() => video.status === 'Completed' ? onViewReview() : onNavigateToAnalysis()}
+                    onClick={() => onOpenJob(job)}
                   >
                     <td className="px-6 py-4 flex items-center gap-3">
                       <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center">
                         <Play size={16} className="text-white/60" />
                       </div>
-                      <span className="font-medium">{video.name}</span>
+                      <span className="font-medium">{job.original_filename}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                        <CheckCircle2 size={12} />
-                        {video.status}
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                        isJobComplete(job.status)
+                          ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                          : isJobFailed(job.status)
+                            ? 'bg-red-500/10 text-red-500 border-red-500/20'
+                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                      }`}>
+                        {isJobComplete(job.status) ? <CheckCircle2 size={12} /> : <Clock size={12} />}
+                        {statusLabels[job.status]}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-white/60 text-sm">{video.duration}</td>
-                    <td className="px-6 py-4 text-white/60 text-sm">{video.date}</td>
+                    <td className="px-6 py-4 text-white/60 text-sm">{formatDuration(job.duration_seconds)}</td>
+                    <td className="px-6 py-4 text-white/60 text-sm">{formatRelativeTime(job.created_at)}</td>
                   </tr>
-                ))
+                )) : (
+                  <tr>
+                    <td className="px-6 py-10 text-center text-sm text-white/40" colSpan={4}>
+                      Upload a video to start the first analysis job.
+                    </td>
+                  </tr>
+                )
               )}
             </tbody>
           </table>
@@ -678,28 +819,82 @@ const Dashboard = ({ onUpload, onViewReview, onViewAll, onNavigateToAnalysis }: 
   );
 };
 
-const AnalysisScreen = ({ onComplete }: { onComplete: () => void }) => {
-  const [progress, setProgress] = useState(0);
-  const [step, setStep] = useState<'Uploading' | 'Extracting' | 'Transcribing' | 'Summarizing'>('Uploading');
+const AnalysisScreen = ({
+  jobId,
+  onComplete,
+  onOpenHistory,
+}: {
+  jobId: string | null;
+  onComplete: (job: VideoJob) => void;
+  onOpenHistory: () => void;
+}) => {
+  const [job, setJob] = useState<VideoJob | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(onComplete, 1000);
-          return 100;
+    if (!jobId) {
+      return undefined;
+    }
+
+    let isCancelled = false;
+    let timeoutId: number | undefined;
+
+    const pollJob = async () => {
+      try {
+        const latestJob = await fetchVideoJob(jobId);
+        if (isCancelled) {
+          return;
         }
-        const next = prev + 1;
-        if (next < 25) setStep('Uploading');
-        else if (next < 50) setStep('Extracting');
-        else if (next < 75) setStep('Transcribing');
-        else setStep('Summarizing');
-        return next;
-      });
-    }, 50);
-    return () => clearInterval(interval);
-  }, [onComplete]);
+
+        setJob(latestJob);
+        setErrorMessage(null);
+
+        if (latestJob.status === 'completed') {
+          onComplete(latestJob);
+          return;
+        }
+
+        if (latestJob.status === 'failed') {
+          return;
+        }
+
+        timeoutId = window.setTimeout(pollJob, 2500);
+      } catch (error) {
+        if (isCancelled) {
+          return;
+        }
+
+        setErrorMessage(error instanceof Error ? error.message : 'Unable to load job status');
+        timeoutId = window.setTimeout(pollJob, 4000);
+      }
+    };
+
+    void pollJob();
+
+    return () => {
+      isCancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [jobId, onComplete]);
+
+  const currentStatus = job?.status ?? 'queued';
+  const step = getStepFromStatus(currentStatus);
+  const progress = statusProgress[currentStatus];
+  const isFailed = currentStatus === 'failed';
+  const headline = !jobId
+    ? 'No active job'
+    : isFailed
+      ? 'Analysis failed'
+      : step === 'Uploading'
+        ? 'Uploading Video...'
+        : 'Analyzing Content...';
+  const description = !jobId
+    ? 'Upload a video from the dashboard to start processing.'
+    : isFailed
+    ? job?.error_message || 'The pipeline stopped before results were generated.'
+    : errorMessage || 'Your upload is being processed through extraction, transcription, and agent analysis.';
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden">
@@ -717,11 +912,9 @@ const AnalysisScreen = ({ onComplete }: { onComplete: () => void }) => {
           </div>
         </div>
 
-        <h2 className="text-4xl font-bold mb-4">{step === 'Uploading' ? 'Uploading Video...' : 'Analyzing Content...'}</h2>
+        <h2 className="text-4xl font-bold mb-4">{headline}</h2>
         <p className="text-white/50 mb-12">
-          {step === 'Uploading' 
-            ? 'Establishing secure connection to data streams.' 
-            : 'Our AI is navigating through your video data streams.'}
+          {description}
         </p>
 
         <div className="space-y-6">
@@ -742,33 +935,49 @@ const AnalysisScreen = ({ onComplete }: { onComplete: () => void }) => {
           </div>
           
           <p className="text-neon-cyan font-mono text-lg">{progress}% Complete</p>
+          {job && (
+            <div className="space-y-2 text-sm text-white/50">
+              <p>{job.original_filename}</p>
+              <p>Status: {statusLabels[job.status]}</p>
+              {job.detected_language && <p>Detected language: {job.detected_language}</p>}
+            </div>
+          )}
+          {isFailed && (
+            <div className="flex items-center justify-center gap-4">
+              <Button variant="secondary" onClick={onOpenHistory}>Open History</Button>
+            </div>
+          )}
         </div>
       </motion.div>
     </div>
   );
 };
 
-const ReviewScreen = () => {
+const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   const [activeTab, setActiveTab] = useState<'summary' | 'transcript'>('summary');
   const [copied, setCopied] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   const handleExportPDF = () => {
     window.print();
   };
 
-  const summaryText = `Executive Summary:
-The presentation outlines the strategic roadmap for Q3, focusing on the launch of Zenith Engine V2. Key milestones include the integration of multi-modal analysis and the expansion into enterprise-grade security protocols.
+  const actionItems = job?.action_items ?? [];
+  const summaryText = job?.summary ?? 'No summary generated yet.';
+  const transcriptEntries = useMemo(() => {
+    const transcript = job?.transcript ?? '';
+    const lines = transcript
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
 
-Key Takeaways:
-- Zenith Engine V2 performance increased by 40% compared to previous iteration.
-- Market expansion strategy targeting the APAC region starting next month.
-- Customer feedback highlights high demand for searchable transcripts.
-- Resource allocation shifted towards AI core development for the next sprint.
+    if (!searchTerm.trim()) {
+      return lines;
+    }
 
-Action Items:
-- Review API documentation for V2 integration.
-- Finalize marketing assets for APAC launch.
-- Schedule follow-up meeting with the engineering team.`;
+    const normalizedSearch = searchTerm.toLowerCase();
+    return lines.filter((line) => line.toLowerCase().includes(normalizedSearch));
+  }, [job?.transcript, searchTerm]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(summaryText);
@@ -783,9 +992,9 @@ Action Items:
           <div className="flex items-center gap-2 text-xs text-white/40 uppercase tracking-widest mb-1">
             <span>Videos</span>
             <ChevronRight size={12} />
-            <span className="text-white/60">Product_Launch_Event.mp4</span>
+            <span className="text-white/60">{job?.original_filename ?? 'No analysis selected'}</span>
           </div>
-          <h1 className="text-3xl font-bold">Product Launch Event</h1>
+          <h1 className="text-3xl font-bold">{job?.original_filename ?? 'Analysis Review'}</h1>
         </div>
         <div className="flex gap-3 print:hidden">
           <Button variant="secondary" className="px-5 py-2 text-sm" onClick={handleExportPDF}>Export PDF</Button>
@@ -832,16 +1041,16 @@ Action Items:
             </h3>
             <div className="grid grid-cols-3 gap-4">
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
-                <p className="text-xs text-white/40 mb-1">Key Topics</p>
-                <p className="text-lg font-bold">12</p>
+                <p className="text-xs text-white/40 mb-1">Transcript Lines</p>
+                <p className="text-lg font-bold">{transcriptEntries.length}</p>
               </div>
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
                 <p className="text-xs text-white/40 mb-1">Sentiment</p>
-                <p className="text-lg font-bold text-emerald-500">Positive</p>
+                <p className="text-lg font-bold text-emerald-500">{job?.sentiment ?? 'Pending'}</p>
               </div>
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
                 <p className="text-xs text-white/40 mb-1">Action Items</p>
-                <p className="text-lg font-bold text-neon-purple">5</p>
+                <p className="text-lg font-bold text-neon-purple">{actionItems.length}</p>
               </div>
             </div>
           </div>
@@ -880,8 +1089,7 @@ Action Items:
                     <section className="flex-1">
                       <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Executive Summary</h4>
                       <p className="text-white/80 leading-relaxed">
-                        The presentation outlines the strategic roadmap for Q3, focusing on the launch of Zenith Engine V2. 
-                        Key milestones include the integration of multi-modal analysis and the expansion into enterprise-grade security protocols.
+                        {summaryText}
                       </p>
                     </section>
                     <button 
@@ -903,37 +1111,27 @@ Action Items:
                   </div>
 
                   <section>
-                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Key Takeaways</h4>
-                    <ul className="space-y-4">
-                      {[
-                        'Zenith Engine V2 performance increased by 40% compared to previous iteration.',
-                        'Market expansion strategy targeting the APAC region starting next month.',
-                        'Customer feedback highlights high demand for searchable transcripts.',
-                        'Resource allocation shifted towards AI core development for the next sprint.'
-                      ].map((item, i) => (
-                        <li key={i} className="flex gap-3 text-white/80">
-                          <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-neon-cyan shrink-0" />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Sentiment</h4>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-white/80">
+                      {job?.sentiment ?? 'Sentiment analysis is still pending.'}
+                    </div>
                   </section>
 
                   <section>
                     <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Action Items</h4>
                     <div className="space-y-3">
-                      {[
-                        'Review API documentation for V2 integration.',
-                        'Finalize marketing assets for APAC launch.',
-                        'Schedule follow-up meeting with the engineering team.'
-                      ].map((item, i) => (
+                      {actionItems.length > 0 ? actionItems.map((item, i) => (
                         <div key={i} className="p-3 rounded-lg bg-white/5 border border-white/5 flex items-center gap-3">
                           <div className="w-5 h-5 rounded border border-white/20 flex items-center justify-center">
                             <CheckCircle2 size={14} className="text-white/20" />
                           </div>
                           <span className="text-sm">{item}</span>
                         </div>
-                      ))}
+                      )) : (
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50">
+                          No action items were extracted from this transcript.
+                        </div>
+                      )}
                     </div>
                   </section>
                 </motion.div>
@@ -950,28 +1148,28 @@ Action Items:
                     <input 
                       type="text" 
                       placeholder="Search transcript..." 
+                      value={searchTerm}
+                      onChange={(event) => setSearchTerm(event.target.value)}
                       className="w-full bg-white/5 border border-white/10 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-neon-cyan/50 transition-colors"
                     />
                   </div>
 
                   <div className="space-y-6">
-                    {[
-                      { time: '00:12', speaker: 'Speaker 1', text: 'Welcome everyone to the Zenith AI Q3 Roadmap presentation. We have some exciting updates to share today.' },
-                      { time: '01:45', speaker: 'Speaker 2', text: 'Thanks, Sarah. As we look at the performance metrics for Engine V2, we are seeing a significant jump in processing speed.' },
-                      { time: '03:20', speaker: 'Speaker 1', text: 'That is correct. We have managed to optimize the transcription layer, reducing latency by nearly 40%.' },
-                      { time: '05:10', speaker: 'Speaker 2', text: 'The next step is to ensure our enterprise clients have the security features they need for high-volume processing.' },
-                      { time: '07:30', speaker: 'Speaker 1', text: 'Exactly. We are also looking at the APAC market expansion, which is a key priority for the leadership team.' }
-                    ].map((entry, i) => (
+                    {transcriptEntries.length > 0 ? transcriptEntries.map((entry, i) => (
                       <div key={i} className="group cursor-pointer">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="text-xs font-mono text-neon-cyan">{entry.time}</span>
-                          <span className="text-xs font-bold text-white/40 uppercase tracking-wider">{entry.speaker}</span>
+                          <span className="text-xs font-mono text-neon-cyan">Line {i + 1}</span>
+                          <span className="text-xs font-bold text-white/40 uppercase tracking-wider">Transcript</span>
                         </div>
                         <p className="text-sm text-white/70 leading-relaxed group-hover:text-white transition-colors">
-                          {entry.text}
+                          {entry}
                         </p>
                       </div>
-                    ))}
+                    )) : (
+                      <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50">
+                        No transcript content matches your search.
+                      </div>
+                    )}
                   </div>
                 </motion.div>
               )}
@@ -990,6 +1188,37 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [isDemoOpen, setIsDemoOpen] = useState(false);
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [jobs, setJobs] = useState<VideoJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [selectedJob, setSelectedJob] = useState<VideoJob | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+
+  const loadJobs = useCallback(async () => {
+    setJobsLoading(true);
+    try {
+      const jobList = await fetchVideoJobs();
+      setJobs(jobList);
+      setJobsError(null);
+      setSelectedJob((currentSelectedJob) => {
+        if (!currentSelectedJob) {
+          return currentSelectedJob;
+        }
+
+        const refreshedJob = jobList.find((job) => job.id === currentSelectedJob.id);
+        return refreshedJob ? { ...currentSelectedJob, ...refreshedJob } : currentSelectedJob;
+      });
+    } catch (error) {
+      setJobsError(error instanceof Error ? error.message : 'Unable to load video jobs');
+    } finally {
+      setJobsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadJobs();
+  }, [loadJobs]);
 
   const handleAuthSuccess = () => {
     setUser({
@@ -1009,6 +1238,42 @@ export default function App() {
     setUser(prev => prev ? { ...prev, ...updates } : null);
   };
 
+  const handleUpload = useCallback(async (file: File, languageHint: LanguageHint) => {
+    setIsUploading(true);
+    setJobsError(null);
+
+    try {
+      const response = await uploadVideo(file, languageHint);
+      setActiveJobId(response.id);
+      setSelectedJob(null);
+      setCurrentScreen('analysis');
+      void loadJobs();
+    } catch (error) {
+      setJobsError(error instanceof Error ? error.message : 'Upload failed');
+    } finally {
+      setIsUploading(false);
+    }
+  }, [loadJobs]);
+
+  const handleOpenJob = useCallback(async (job: VideoJob) => {
+    setActiveJobId(job.id);
+    try {
+      const detailedJob = await fetchVideoJob(job.id);
+      setSelectedJob(detailedJob);
+      setCurrentScreen(detailedJob.status === 'completed' ? 'review' : 'analysis');
+    } catch {
+      setSelectedJob(job);
+      setCurrentScreen(job.status === 'completed' ? 'review' : 'analysis');
+    }
+  }, []);
+
+  const handleAnalysisComplete = useCallback(async (job: VideoJob) => {
+    setSelectedJob(job);
+    setActiveJobId(job.id);
+    await loadJobs();
+    setCurrentScreen('review');
+  }, [loadJobs]);
+
   const renderScreen = () => {
     switch (currentScreen) {
       case 'landing':
@@ -1019,10 +1284,13 @@ export default function App() {
         return (
           <DashboardLayout activeTab="dashboard" onNavigate={setCurrentScreen} user={user} onLogout={handleLogout}>
             <Dashboard 
-              onUpload={() => setCurrentScreen('analysis')} 
-              onViewReview={() => setCurrentScreen('review')} 
+              jobs={jobs}
+              isLoading={jobsLoading}
+              isUploading={isUploading}
+              uploadError={jobsError}
+              onUpload={handleUpload}
               onViewAll={() => setCurrentScreen('history')}
-              onNavigateToAnalysis={() => setCurrentScreen('analysis')}
+              onOpenJob={handleOpenJob}
             />
           </DashboardLayout>
         );
@@ -1030,8 +1298,9 @@ export default function App() {
         return (
           <DashboardLayout activeTab="history" onNavigate={setCurrentScreen} user={user} onLogout={handleLogout}>
             <HistoryScreen 
-              onViewReview={() => setCurrentScreen('review')} 
-              onNavigateToAnalysis={() => setCurrentScreen('analysis')}
+              jobs={jobs}
+              isLoading={jobsLoading}
+              onOpenJob={handleOpenJob}
             />
           </DashboardLayout>
         );
@@ -1044,13 +1313,20 @@ export default function App() {
       case 'analysis':
         return (
           <DashboardLayout activeTab="dashboard" onNavigate={setCurrentScreen} user={user} onLogout={handleLogout}>
-            <AnalysisScreen onComplete={() => setCurrentScreen('review')} />
+            <AnalysisScreen
+              jobId={activeJobId}
+              onComplete={handleAnalysisComplete}
+              onOpenHistory={() => {
+                void loadJobs();
+                setCurrentScreen('history');
+              }}
+            />
           </DashboardLayout>
         );
       case 'review':
         return (
           <DashboardLayout activeTab="dashboard" onNavigate={setCurrentScreen} user={user} onLogout={handleLogout}>
-            <ReviewScreen />
+            <ReviewScreen job={selectedJob} />
           </DashboardLayout>
         );
       default:
