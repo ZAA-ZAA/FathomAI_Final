@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pathomai-db
+    environment:
+      POSTGRES_DB: pathomai
+      POSTGRES_USER: pathomai
+      POSTGRES_PASSWORD: pathomai
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pathomai -d pathomai']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ai-agents:
+    build:
+      context: ./ai-agents-lite-main
+    container_name: pathomai-ai-agents
+    env_file:
+      - ./.env
+    ports:
+      - '8001:8000'
+    restart: unless-stopped
+
+  main-app:
+    build:
+      context: ./pathomAI-main
+    container_name: pathomai-main-app
+    env_file:
+      - ./.env
+    depends_on:
+      db:
+        condition: service_healthy
+      ai-agents:
+        condition: service_started
+    ports:
+      - '8000:8000'
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

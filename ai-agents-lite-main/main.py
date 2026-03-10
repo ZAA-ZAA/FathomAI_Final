@@ -7,9 +7,10 @@ from openai import OpenAI
 
 from agents import execute_tool_by_name, get_tool_specs
 from app.agents.zoey_agent import create_zoey_agent
-from workflow.basic_workflow import run_workflow
+from app.routers.transcript_analysis import router as transcript_analysis_router
 
 app = FastAPI()
+app.include_router(transcript_analysis_router)
 
 
 class ChatRequest(BaseModel):
@@ -132,6 +133,8 @@ def math_workflow(request: MathWorkflowRequest):
     - Division (with zero handling)
     """
     try:
+        from workflow.basic_workflow import run_workflow
+
         # Run the workflow
         result = run_workflow(request.num1, request.num2)
         
@@ -149,4 +152,3 @@ def math_workflow(request: MathWorkflowRequest):
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-

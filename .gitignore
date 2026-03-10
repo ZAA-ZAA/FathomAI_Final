@@ -1,0 +1,29 @@
+# Secrets and local env files
+.env
+.env.*
+!.env.example
+!pathomAI-main/.env.example
+
+# Python caches and virtual environments
+**/__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node and frontend build artifacts
+**/node_modules/
+pathomAI-main/dist/
+pathomAI-main/build/
+coverage/
+*.log
+
+# Local backend runtime files
+pathomAI-main/backend/storage/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
