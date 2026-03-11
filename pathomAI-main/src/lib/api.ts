@@ -77,6 +77,22 @@ export interface UploadVideoResponse {
   message: string;
 }
 
+export interface VideoChatMessage {
+  id?: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at?: string;
+}
+
+export interface VideoChatResponse {
+  answer: string;
+  suggested_questions: string[];
+}
+
+export interface VideoChatSuggestionResponse {
+  suggested_questions: string[];
+}
+
 const AUTH_TOKEN_KEY = 'pathomai_auth_token';
 
 export function getStoredAuthToken(): string | null {
@@ -250,6 +266,44 @@ export async function uploadVideoUrl(
     body: JSON.stringify({
       video_url: videoUrl,
       language_hint: languageHint,
+    }),
+  });
+}
+
+export async function fetchVideoChatSuggestions(
+  jobId: string,
+  askedQuestions: string[] = [],
+): Promise<VideoChatSuggestionResponse> {
+  return fetchJson<VideoChatSuggestionResponse>(`/api/videos/${jobId}/chat/suggestions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      asked_questions: askedQuestions,
+    }),
+  });
+}
+
+export async function fetchVideoChatMessages(jobId: string): Promise<VideoChatMessage[]> {
+  return fetchJson<VideoChatMessage[]>(`/api/videos/${jobId}/chat/messages`);
+}
+
+export async function sendVideoChatMessage(
+  jobId: string,
+  question: string,
+  chatHistory: VideoChatMessage[],
+  askedQuestions: string[],
+): Promise<VideoChatResponse> {
+  return fetchJson<VideoChatResponse>(`/api/videos/${jobId}/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      question,
+      chat_history: chatHistory,
+      asked_questions: askedQuestions,
     }),
   });
 }

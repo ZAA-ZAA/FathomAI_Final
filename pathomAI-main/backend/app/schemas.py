@@ -97,6 +97,39 @@ class AgentAnalysisResult(BaseModel):
     sentiment: str
 
 
+class ChatMessageInput(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1)
+
+
+class VideoChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    chat_history: list[ChatMessageInput] = Field(default_factory=list)
+    asked_questions: list[str] = Field(default_factory=list)
+
+
+class VideoChatResponse(BaseModel):
+    answer: str
+    suggested_questions: list[str] = Field(default_factory=list)
+
+
+class VideoChatMessageRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    role: str
+    content: str
+    created_at: datetime
+
+
+class VideoChatSuggestionRequest(BaseModel):
+    asked_questions: list[str] = Field(default_factory=list)
+
+
+class VideoChatSuggestionResponse(BaseModel):
+    suggested_questions: list[str] = Field(default_factory=list)
+
+
 class TranscriptionResult(BaseModel):
     transcript: str
     detected_language: str | None = None

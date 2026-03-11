@@ -23,18 +23,25 @@ import {
   Star,
   Sparkles,
   Copy,
-  Check
+  Check,
+  Bot,
+  MessageSquare,
+  Send,
+  LoaderCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   changePassword,
   clearStoredAuthToken,
   fetchCurrentUser,
+  fetchVideoChatMessages,
+  fetchVideoChatSuggestions,
   fetchVideoJob,
   fetchVideoJobs,
   fetchVideoSourceUrl,
   getStoredAuthToken,
   retryVideoJob,
+  sendVideoChatMessage,
   signIn,
   signOut,
   signUp,
@@ -42,6 +49,7 @@ import {
   uploadVideo,
   uploadVideoUrl,
   type AuthUser,
+  type VideoChatMessage,
   type VideoJob,
   type VideoJobStatus,
 } from './lib/api';
@@ -1354,12 +1362,21 @@ const AnalysisScreen = ({
 };
 
 const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
-  const [activeTab, setActiveTab] = useState<'summary' | 'transcript'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'chat'>('summary');
   const [copied, setCopied] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [videoSourceUrl, setVideoSourceUrl] = useState<string | null>(null);
   const [videoSourceError, setVideoSourceError] = useState<string | null>(null);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
+  const [chatMessages, setChatMessages] = useState<VideoChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState('');
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
+  const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false);
+  const [isChatSending, setIsChatSending] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const handleExportPDF = () => {
     window.print();
@@ -1404,11 +1421,86 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     return transcriptSegments.filter((segment) => segment.text.toLowerCase().includes(normalizedSearch));
   }, [transcriptSegments, searchTerm]);
 
+  const askedQuestions = useMemo(
+    () => chatMessages.filter((message) => message.role === 'user').map((message) => message.content),
+    [chatMessages],
+  );
+
+  const hasChatContext = Boolean(
+    job
+    && job.status === 'completed'
+    && (((job.transcript ?? '').trim()) || transcriptSegments.length > 0),
+  );
+  const chatUnavailable = !hasChatContext;
+
+  const loadSuggestions = useCallback(async (jobId: string, existingQuestions: string[]) => {
+    setIsSuggestionsLoading(true);
+    setChatError(null);
+    try {
+      const response = await fetchVideoChatSuggestions(jobId, existingQuestions);
+      setSuggestedQuestions(response.suggested_questions);
+    } catch (error) {
+      setSuggestedQuestions([]);
+      setChatError(error instanceof Error ? error.message : 'Unable to load suggested questions');
+    } finally {
+      setIsSuggestionsLoading(false);
+    }
+  }, []);
+
+  const loadChatMessages = useCallback(async (jobId: string) => {
+    try {
+      const messages = await fetchVideoChatMessages(jobId);
+      setChatMessages(messages);
+    } catch (error) {
+      setChatMessages([]);
+      setChatError(error instanceof Error ? error.message : 'Unable to load chat history');
+    }
+  }, []);
+
   const handleCopy = () => {
     navigator.clipboard.writeText(summaryText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleSendChat = useCallback(async () => {
+    if (!job?.id || isChatSending) {
+      return;
+    }
+
+    const question = chatDraft.trim();
+    if (!question) {
+      return;
+    }
+
+    if (chatUnavailable) {
+      setChatError('Chat context is not ready for this video yet. Open the transcript tab first and then try again, or refresh the job details.');
+      return;
+    }
+
+    const nextAskedQuestions = [...askedQuestions, question];
+
+    setIsChatSending(true);
+    setChatError(null);
+    setChatDraft('');
+    setPendingQuestion(question);
+
+    try {
+      const response = await sendVideoChatMessage(job.id, question, chatMessages, nextAskedQuestions);
+      await loadChatMessages(job.id);
+      if (response.suggested_questions.length > 0) {
+        setSuggestedQuestions(response.suggested_questions);
+      } else {
+        void loadSuggestions(job.id, nextAskedQuestions);
+      }
+    } catch (error) {
+      setChatDraft(question);
+      setChatError(error instanceof Error ? error.message : 'Unable to get an answer for this video');
+    } finally {
+      setPendingQuestion(null);
+      setIsChatSending(false);
+    }
+  }, [askedQuestions, chatDraft, chatMessages, chatUnavailable, isChatSending, job?.id, loadChatMessages, loadSuggestions]);
 
   useEffect(() => {
     if (!job?.id) {
@@ -1454,6 +1546,39 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     };
   }, [job?.id]);
 
+  useEffect(() => {
+    setActiveTab('summary');
+    setSearchTerm('');
+    setChatDraft('');
+    setChatError(null);
+    setPendingQuestion(null);
+
+    setChatMessages([]);
+    setSuggestedQuestions([]);
+
+    if (job?.id && job.status === 'completed' && (((job.transcript ?? '').trim()) || transcriptSegments.length > 0)) {
+      void loadChatMessages(job.id);
+      void loadSuggestions(job.id, []);
+    }
+  }, [job?.id, job?.status, job?.transcript, loadChatMessages, loadSuggestions, transcriptSegments.length]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (activeTab !== 'chat') {
+      return;
+    }
+
+    const focusInput = () => {
+      chatInputRef.current?.focus();
+    };
+
+    const frame = window.requestAnimationFrame(focusInput);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, job?.id]);
+
   return (
     <div className="flex-1 p-10 overflow-hidden flex flex-col">
       <header className="mb-8 flex justify-between items-center">
@@ -1481,7 +1606,6 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
       </header>
 
       <div className="flex-1 flex gap-8 overflow-hidden print:block print:overflow-visible">
-        {/* Video Player Left */}
         <div className="flex-[1.5] flex flex-col gap-6 overflow-hidden print:hidden">
           <div className="aspect-video glass-panel overflow-hidden relative group">
             {videoSourceUrl ? (
@@ -1503,7 +1627,6 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                 </div>
               </div>
             )}
-            {/* Controls Overlay */}
             {!videoSourceUrl && (
               <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-midnight to-transparent">
                 <div className="text-sm text-white/50">
@@ -1535,29 +1658,35 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
           </div>
         </div>
 
-        {/* Analysis Right */}
         <div className="flex-1 glass-panel flex flex-col overflow-hidden print:border-none print:bg-transparent print:p-0 print:overflow-visible">
           <div className="flex border-b border-white/10 print:hidden">
-            <button 
+            <button
               onClick={() => setActiveTab('summary')}
               className={`flex-1 py-4 text-sm font-bold transition-colors relative ${activeTab === 'summary' ? 'text-neon-cyan' : 'text-white/40 hover:text-white'}`}
             >
               AI SUMMARY
               {activeTab === 'summary' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-neon-cyan" />}
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('transcript')}
               className={`flex-1 py-4 text-sm font-bold transition-colors relative ${activeTab === 'transcript' ? 'text-neon-cyan' : 'text-white/40 hover:text-white'}`}
             >
               FULL TRANSCRIPT
               {activeTab === 'transcript' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-neon-cyan" />}
             </button>
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`flex-1 py-4 text-sm font-bold transition-colors relative ${activeTab === 'chat' ? 'text-neon-cyan' : 'text-white/40 hover:text-white'}`}
+            >
+              AI CHAT
+              {activeTab === 'chat' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-neon-cyan" />}
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6">
             <AnimatePresence mode="wait">
               {activeTab === 'summary' ? (
-                <motion.div 
+                <motion.div
                   key="summary"
                   initial={{ opacity: 0, x: 10 }}
                   animate={{ opacity: 1, x: 0 }}
@@ -1571,7 +1700,7 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                         {summaryText}
                       </p>
                     </section>
-                    <button 
+                    <button
                       onClick={handleCopy}
                       className="shrink-0 p-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-neon-cyan hover:border-neon-cyan/50 transition-all flex items-center gap-2 text-xs font-bold group"
                     >
@@ -1614,8 +1743,8 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                     </div>
                   </section>
                 </motion.div>
-              ) : (
-                <motion.div 
+              ) : activeTab === 'transcript' ? (
+                <motion.div
                   key="transcript"
                   initial={{ opacity: 0, x: 10 }}
                   animate={{ opacity: 1, x: 0 }}
@@ -1624,9 +1753,9 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                 >
                   <div className="relative mb-6">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" size={16} />
-                    <input 
-                      type="text" 
-                      placeholder="Search transcript..." 
+                    <input
+                      type="text"
+                      placeholder="Search transcript..."
                       value={searchTerm}
                       onChange={(event) => setSearchTerm(event.target.value)}
                       className="w-full bg-white/5 border border-white/10 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-neon-cyan/50 transition-colors"
@@ -1659,6 +1788,200 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                         No transcript content matches your search.
                       </div>
                     )}
+                  </div>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="chat"
+                  initial={{ opacity: 0, x: 10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -10 }}
+                  className="flex h-full min-h-0 flex-col gap-4"
+                >
+                  <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/6 to-white/[0.02] p-4">
+                    <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-neon-cyan">
+                      <Bot size={14} />
+                      Video Agent
+                    </div>
+                    <p className="text-sm leading-relaxed text-white/65">
+                      Ask only about this uploaded video. Answers are grounded in this job&apos;s transcript, timestamps, summary, and extracted action items.
+                    </p>
+                  </div>
+
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-white/40">
+                        <Sparkles size={14} className="text-neon-cyan" />
+                        Suggested Questions
+                      </div>
+                      <span className="text-[11px] uppercase tracking-[0.25em] text-white/30">
+                        Click to reuse
+                      </span>
+                    </div>
+                    <div className="grid gap-3">
+                      {isSuggestionsLoading ? (
+                        <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
+                          <LoaderCircle size={16} className="animate-spin text-neon-cyan" />
+                          Generating related questions...
+                        </div>
+                      ) : suggestedQuestions.length > 0 ? (
+                        suggestedQuestions.map((question) => (
+                          <button
+                            key={question}
+                            type="button"
+                            onClick={() => {
+                              setChatDraft(question);
+                              window.requestAnimationFrame(() => {
+                                chatInputRef.current?.focus();
+                                const nextPosition = question.length;
+                                chatInputRef.current?.setSelectionRange(nextPosition, nextPosition);
+                              });
+                            }}
+                            className="relative z-10 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-left text-sm leading-relaxed text-white/75 transition-all hover:border-neon-cyan/40 hover:bg-white/[0.07] hover:text-white"
+                            style={{ pointerEvents: 'auto' }}
+                          >
+                            {question}
+                          </button>
+                        ))
+                      ) : (
+                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
+                          No suggestions available yet.
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  <div className="min-h-0 flex-1 rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="mb-4 flex items-center justify-between gap-3 border-b border-white/10 pb-3">
+                      <div>
+                        <h4 className="text-sm font-bold uppercase tracking-[0.25em] text-white/50">Conversation</h4>
+                        <p className="mt-1 text-xs text-white/35">
+                          {chatMessages.length > 0 ? `${chatMessages.length} saved messages for this video` : 'No saved messages yet'}
+                        </p>
+                      </div>
+                      {isChatSending && (
+                        <div className="flex items-center gap-2 text-xs text-neon-cyan">
+                          <LoaderCircle size={14} className="animate-spin" />
+                          Generating answer
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex h-full min-h-0 flex-col gap-4 overflow-visible">
+                      <div className="min-h-[16rem] flex-1 space-y-4 overflow-y-auto pr-2">
+                        {chatMessages.length > 0 ? chatMessages.map((message, index) => (
+                          <div
+                            key={message.id ?? `${message.role}-${index}`}
+                            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                          >
+                            <div
+                              className={`max-w-[88%] rounded-2xl px-4 py-3 shadow-sm ${
+                                message.role === 'user'
+                                  ? 'bg-neon-cyan text-midnight'
+                                  : 'border border-white/10 bg-white/[0.06] text-white/85'
+                              }`}
+                            >
+                              <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+                                {message.role === 'user' ? (
+                                  <>
+                                    <MessageSquare size={12} />
+                                    You
+                                  </>
+                                ) : (
+                                  <>
+                                    <Bot size={12} />
+                                    Video Agent
+                                  </>
+                                )}
+                              </div>
+                              <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
+                            </div>
+                          </div>
+                        )) : pendingQuestion ? null : (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] p-6 text-sm text-white/45">
+                            Start with a specific question like "What decisions were made?", "What happened around 01:10?", or "Which student issue came up most often?"
+                          </div>
+                        )}
+
+                        {pendingQuestion && (
+                          <>
+                            <div className="flex justify-end">
+                              <div className="max-w-[88%] rounded-2xl bg-neon-cyan px-4 py-3 text-midnight shadow-sm">
+                                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+                                  <MessageSquare size={12} />
+                                  You
+                                </div>
+                                <p className="whitespace-pre-wrap text-sm leading-relaxed">{pendingQuestion}</p>
+                              </div>
+                            </div>
+                            <div className="flex justify-start">
+                              <div className="max-w-[88%] rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3 text-white/85 shadow-sm">
+                                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+                                  <Bot size={12} />
+                                  Video Agent
+                                </div>
+                                <div className="flex items-center gap-2 text-sm text-white/60">
+                                  <LoaderCircle size={14} className="animate-spin text-neon-cyan" />
+                                  Thinking about this video...
+                                </div>
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        <div ref={chatEndRef} />
+                      </div>
+
+                      <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                        {chatError && (
+                          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                            {chatError}
+                          </div>
+                        )}
+                        {chatUnavailable && (
+                          <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
+                            Chat answers require transcript context from this video. You can still draft a question here.
+                          </div>
+                        )}
+                        <div className="relative z-20 flex items-end gap-3" style={{ pointerEvents: 'auto' }}>
+                          <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 focus-within:border-neon-cyan/50">
+                            <textarea
+                              ref={chatInputRef}
+                              value={chatDraft}
+                              onChange={(event) => setChatDraft(event.target.value)}
+                              onInput={(event) => setChatDraft((event.target as HTMLTextAreaElement).value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' && !event.shiftKey) {
+                                  event.preventDefault();
+                                  void handleSendChat();
+                                }
+                              }}
+                              rows={3}
+                              disabled={isChatSending}
+                              placeholder="Ask about this specific video..."
+                              className="min-h-[96px] w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-sm leading-relaxed text-white placeholder:text-white/30 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                              style={{ pointerEvents: 'auto' }}
+                              autoCapitalize="sentences"
+                              autoCorrect="on"
+                              spellCheck
+                            />
+                          </div>
+                          <Button
+                            variant="neon"
+                            className="h-[96px] shrink-0 rounded-2xl px-6"
+                            onClick={() => {
+                              void handleSendChat();
+                            }}
+                            disabled={isChatSending || !chatDraft.trim()}
+                          >
+                            <span className="flex items-center gap-2">
+                              {isChatSending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}
+                              {isChatSending ? 'Asking...' : 'Send'}
+                            </span>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </motion.div>
               )}
