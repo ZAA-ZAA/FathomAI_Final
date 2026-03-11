@@ -212,7 +212,50 @@ What this proves:
 Relevant code:
 - [videos.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/api/routes/videos.py:75)
 
-## 8. Poll The Job
+## 8. Import A Video From URL
+
+This supports YouTube and other sources that `yt-dlp` can download, plus many direct video URLs.
+
+Create `import-url.json`:
+
+```powershell
+@{
+  video_url = "https://samplelib.com/lib/preview/mp4/sample-5s.mp4"
+  language_hint = "auto"
+} | ConvertTo-Json -Compress | Set-Content import-url.json -Encoding utf8
+```
+
+Call the import route:
+
+```powershell
+curl.exe -s -X POST http://localhost:8000/api/videos/import `
+  -H "Authorization: Bearer $token" `
+  -H "Content-Type: application/json" `
+  --data-binary "@import-url.json"
+```
+
+Expected response:
+
+```json
+{
+  "id": "<job-id>",
+  "status": "queued",
+  "message": "Video URL accepted for processing"
+}
+```
+
+Observed on the current stack:
+- the job is created immediately
+- the video download happens in the background pipeline
+- `source_type` becomes `"url"`
+- `source_url` stores the original link
+
+Relevant code:
+- [videos.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/api/routes/videos.py:131)
+- [video_pipeline.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/services/video_pipeline.py:18)
+- [video_ingest.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/services/video_ingest.py:11)
+
+## 9. Poll The Job
 
 ```powershell
 $jobId = "<paste-job-id>"
@@ -244,7 +287,7 @@ Relevant code:
 - [media.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/services/media.py:39)
 - [transcription.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/services/transcription.py:17)
 
-## 9. Retry A Failed Job
+## 10. Retry A Failed Job
 
 ```powershell
 curl.exe -s -X POST http://localhost:8000/api/videos/$jobId/retry `
@@ -267,7 +310,7 @@ Observed after retry, with the placeholder key still in `.env`:
 Relevant code:
 - [videos.py](/C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/pathomAI-main/backend/app/api/routes/videos.py:140)
 
-## 10. Direct Agent Service Test
+## 11. Direct Agent Service Test
 
 Create `agent-analysis.json`:
 
@@ -313,6 +356,7 @@ These checks were run successfully:
 - `GET /api/auth/me`
 - `GET /api/videos`
 - `POST /api/videos/upload`
+- `POST /api/videos/import`
 - `GET /api/videos/{jobId}`
 - `POST /api/videos/{jobId}/retry`
 - `POST /internal/transcript-analysis`

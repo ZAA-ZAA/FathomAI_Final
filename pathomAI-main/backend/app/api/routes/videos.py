@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.models import JobStatus, VideoJob
-from app.schemas import VideoJobRead, VideoJobSummary, VideoUploadResponse
+from app.schemas import VideoJobRead, VideoJobSummary, VideoUploadResponse, VideoUrlUploadRequest
 from app.services.auth import AuthContext, require_auth_context
 from app.services.media import probe_video_metadata
 from app.services.video_pipeline import process_video_job
@@ -93,18 +94,15 @@ def upload_video(
     if extension not in ALLOWED_VIDEO_EXTENSIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported video file type")
 
-    job = VideoJob(
-        tenant_id=auth_context.tenant_id,
-        user_id=auth_context.user_id,
+    job = _create_job_record(
+        db=db,
+        auth_context=auth_context,
         original_filename=file.filename,
-        stored_filename=file.filename,
-        storage_path="",
+        language_hint=normalized_hint,
         content_type=file.content_type,
-        language_hint=_normalize_language_hint(normalized_hint),
-        status=JobStatus.QUEUED.value,
+        source_type="file",
+        source_url=None,
     )
-    db.add(job)
-    db.flush()
 
     job_directory = settings.upload_dir / auth_context.tenant_id / job.id
     job_directory.mkdir(parents=True, exist_ok=True)
@@ -129,11 +127,39 @@ def upload_video(
 
     background_tasks.add_task(process_video_job, job.id, settings.audio_dir)
 
-    return VideoUploadResponse(
-        id=job.id,
-        status=job.status,
-        message="Video upload accepted for processing",
+    return VideoUploadResponse(id=job.id, status=job.status, message="Video upload accepted for processing")
+
+
+@router.post("/import", response_model=VideoUploadResponse, status_code=status.HTTP_202_ACCEPTED)
+def import_video_from_url(
+    request: VideoUrlUploadRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> VideoUploadResponse:
+    normalized_hint = (request.language_hint or "auto").strip().lower()
+    if normalized_hint not in ALLOWED_LANGUAGE_HINTS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported language hint")
+
+    parsed_url = urlparse(str(request.video_url))
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid video URL is required")
+
+    provisional_name = parsed_url.path.rsplit("/", 1)[-1] or parsed_url.netloc
+    job = _create_job_record(
+        db=db,
+        auth_context=auth_context,
+        original_filename=provisional_name[:255],
+        language_hint=normalized_hint,
+        content_type=None,
+        source_type="url",
+        source_url=str(request.video_url),
     )
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(process_video_job, job.id, settings.audio_dir)
+    return VideoUploadResponse(id=job.id, status=job.status, message="Video URL accepted for processing")
 
 
 @router.post("/{job_id}/retry", response_model=VideoUploadResponse)
@@ -160,6 +186,7 @@ def retry_video_job(
     job.status = JobStatus.QUEUED.value
     job.error_message = None
     job.transcript = None
+    job.transcript_segments = []
     job.summary = None
     job.sentiment = None
     job.action_items = []
@@ -195,3 +222,29 @@ def _normalize_language_hint(language_hint: str) -> str:
     if language_hint in {"tagalog"}:
         return "tl"
     return language_hint
+
+
+def _create_job_record(
+    db: Session,
+    auth_context: AuthContext,
+    original_filename: str,
+    language_hint: str,
+    content_type: str | None,
+    source_type: str,
+    source_url: str | None,
+) -> VideoJob:
+    job = VideoJob(
+        tenant_id=auth_context.tenant_id,
+        user_id=auth_context.user_id,
+        source_type=source_type,
+        source_url=source_url,
+        original_filename=original_filename,
+        stored_filename=original_filename,
+        storage_path="",
+        content_type=content_type,
+        language_hint=_normalize_language_hint(language_hint),
+        status=JobStatus.QUEUED.value,
+    )
+    db.add(job)
+    db.flush()
+    return job

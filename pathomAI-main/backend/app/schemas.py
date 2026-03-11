@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, StringConstraints
 from typing_extensions import Annotated
 
 
@@ -57,11 +57,18 @@ class VideoUploadResponse(BaseModel):
     message: str
 
 
+class VideoUrlUploadRequest(BaseModel):
+    video_url: HttpUrl
+    language_hint: str = "auto"
+
+
 class VideoJobSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     user_id: str
+    source_type: str
+    source_url: str | None
     original_filename: str
     content_type: str | None
     file_size_bytes: int
@@ -80,6 +87,7 @@ class VideoJobSummary(BaseModel):
 
 class VideoJobRead(VideoJobSummary):
     transcript: str | None = None
+    transcript_segments: list[dict] = Field(default_factory=list)
     video_metadata: dict = Field(default_factory=dict)
 
 
@@ -92,3 +100,4 @@ class AgentAnalysisResult(BaseModel):
 class TranscriptionResult(BaseModel):
     transcript: str
     detected_language: str | None = None
+    transcript_segments: list[dict] = Field(default_factory=list)

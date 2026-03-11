@@ -7,11 +7,14 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import SessionLocal
 from app.models import JobStatus, VideoJob
 from app.services.agent_client import request_transcript_analysis
 from app.services.media import extract_audio
 from app.services.transcription import transcribe_audio_file
+from app.services.video_ingest import build_filename_from_download, download_video_from_url
+from app.services.media import probe_video_metadata
 
 
 def process_video_job(job_id: str, audio_root: Path) -> None:
@@ -22,6 +25,32 @@ def process_video_job(job_id: str, audio_root: Path) -> None:
         if job is None:
             return
 
+        if job.source_type == "url" and job.source_url and not job.storage_path:
+            stored_path, download_metadata = download_video_from_url(
+                job.source_url,
+                settings.upload_dir / job.tenant_id / job.id,
+            )
+            metadata = probe_video_metadata(stored_path)
+            job.storage_path = str(stored_path)
+            job.stored_filename = stored_path.name
+            job.original_filename = build_filename_from_download(download_metadata, stored_path)[:255]
+            job.content_type = download_metadata.get("content_type")
+            job.file_size_bytes = stored_path.stat().st_size
+            job.duration_seconds = metadata.get("duration_seconds")
+            job.video_metadata = {
+                **metadata,
+                "source": {
+                    "type": "url",
+                    "url": job.source_url,
+                    "extractor": download_metadata.get("extractor"),
+                    "extractor_key": download_metadata.get("extractor_key"),
+                    "webpage_url": download_metadata.get("webpage_url"),
+                    "uploader": download_metadata.get("uploader"),
+                    "thumbnail": download_metadata.get("thumbnail"),
+                },
+            }
+            session.commit()
+
         _update_status(session, job, JobStatus.EXTRACTING_AUDIO.value)
         video_path = Path(job.storage_path)
         audio_path = audio_root / job.id / f"{video_path.stem}.wav"
@@ -30,6 +59,7 @@ def process_video_job(job_id: str, audio_root: Path) -> None:
         _update_status(session, job, JobStatus.TRANSCRIBING.value)
         transcription = transcribe_audio_file(audio_path, job.language_hint)
         job.transcript = transcription.transcript
+        job.transcript_segments = transcription.transcript_segments
         job.detected_language = transcription.detected_language or _fallback_language(job.language_hint)
         session.commit()
 

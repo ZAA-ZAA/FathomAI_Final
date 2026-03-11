@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -27,10 +28,16 @@ def request_transcript_analysis(
         "source_language": source_language,
     }
 
-    try:
-        response = httpx.post(url, json=payload, timeout=90.0)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise AgentServiceError(f"Agent service request failed: {exc}") from exc
+    last_error: httpx.HTTPError | None = None
+    for attempt in range(3):
+        try:
+            response = httpx.post(url, json=payload, timeout=90.0)
+            response.raise_for_status()
+            return AgentAnalysisResult.model_validate(response.json())
+        except httpx.HTTPError as exc:
+            last_error = exc
+            if attempt == 2:
+                break
+            time.sleep(2)
 
-    return AgentAnalysisResult.model_validate(response.json())
+    raise AgentServiceError(f"Agent service request failed: {last_error}") from last_error

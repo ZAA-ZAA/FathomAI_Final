@@ -24,6 +24,11 @@ services:
       - ./.env
     ports:
       - '8001:8000'
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   main-app:
@@ -36,7 +41,7 @@ services:
       db:
         condition: service_healthy
       ai-agents:
-        condition: service_started
+        condition: service_healthy
     ports:
       - '8000:8000'
     restart: unless-stopped

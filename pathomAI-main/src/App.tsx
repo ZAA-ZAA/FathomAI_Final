@@ -40,6 +40,7 @@ import {
   signUp,
   updateProfile,
   uploadVideo,
+  uploadVideoUrl,
   type AuthUser,
   type VideoJob,
   type VideoJobStatus,
@@ -83,6 +84,23 @@ const formatDuration = (seconds: number | null | undefined) => {
   }
 
   const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+  }
+
+  return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+};
+
+const formatTimestamp = (seconds: number | null | undefined) => {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) {
+    return '--:--';
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const remainingSeconds = totalSeconds % 60;
@@ -318,6 +336,85 @@ const DemoModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
 );
 
 // --- Screens ---
+
+const LandingPage = ({
+  onStart,
+  onWatchDemo,
+}: {
+  onStart: (mode: 'signin' | 'signup') => void;
+  onWatchDemo: () => void;
+}) => (
+  <div className="min-h-screen bg-midnight text-white flex flex-col">
+    <nav className="flex items-center justify-between px-8 py-6 border-b border-white/5">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-gradient-to-br from-neon-cyan to-neon-purple rounded-xl flex items-center justify-center">
+          <Rocket className="text-midnight w-6 h-6" />
+        </div>
+        <span className="text-xl font-bold tracking-tighter">ZENITH AI</span>
+      </div>
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" className="px-5 py-2 text-sm" onClick={onWatchDemo}>How It Works</Button>
+        <Button variant="secondary" className="px-5 py-2 text-sm" onClick={() => onStart('signin')}>Sign In</Button>
+      </div>
+    </nav>
+
+    <main className="flex-1 flex flex-col items-center justify-center px-6 text-center relative overflow-hidden">
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] cosmic-gradient opacity-30 pointer-events-none" />
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8 }}
+        className="relative z-10 max-w-4xl"
+      >
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-medium text-neon-cyan mb-8">
+          <Sparkles size={14} />
+          <span>VIDEO INTELLIGENCE PLATFORM</span>
+        </div>
+        <h1 className="text-6xl md:text-8xl font-bold tracking-tight mb-6 leading-[1.05]">
+          Turn meetings and recordings
+          <br />
+          into <span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-neon-purple">searchable insights</span>
+        </h1>
+        <p className="text-lg md:text-xl text-white/60 mb-10 max-w-3xl mx-auto leading-relaxed">
+          Upload a video, transcribe English and Tagalog speech with Whisper, then generate a summary,
+          action items, and sentiment through the separate AI agent service.
+        </p>
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+          <Button variant="neon" className="text-lg px-10 py-4" onClick={() => onStart('signup')}>
+            Create Workspace <ArrowRight size={20} />
+          </Button>
+          <Button variant="ghost" className="text-lg px-10 py-4" onClick={onWatchDemo}>
+            View Workflow
+          </Button>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ delay: 0.2, duration: 0.8 }}
+        className="relative z-10 mt-16 grid w-full max-w-5xl gap-4 md:grid-cols-3"
+      >
+        <div className="glass-panel p-6 text-left">
+          <Upload className="text-neon-cyan mb-4" size={28} />
+          <h3 className="text-lg font-bold mb-2">Upload and Queue</h3>
+          <p className="text-sm text-white/50">Store the video, capture metadata, and start a tenant-scoped processing job.</p>
+        </div>
+        <div className="glass-panel p-6 text-left">
+          <FileText className="text-neon-cyan mb-4" size={28} />
+          <h3 className="text-lg font-bold mb-2">Transcribe Remotely</h3>
+          <p className="text-sm text-white/50">FFmpeg extracts WAV audio and `whisper-1` returns the transcript and detected language.</p>
+        </div>
+        <div className="glass-panel p-6 text-left">
+          <Zap className="text-neon-cyan mb-4" size={28} />
+          <h3 className="text-lg font-bold mb-2">Analyze with Agents</h3>
+          <p className="text-sm text-white/50">The separate `ai-agents-lite-main` service uses `gpt-4o` for summary, action items, and sentiment.</p>
+        </div>
+      </motion.div>
+    </main>
+  </div>
+);
 
 const AuthScreen = ({
   initialMode = 'signin',
@@ -869,6 +966,7 @@ const Dashboard = ({
   isUploading,
   uploadError,
   onUpload,
+  onImportUrl,
   onViewAll,
   onOpenJob,
 }: {
@@ -877,11 +975,14 @@ const Dashboard = ({
   isUploading: boolean;
   uploadError: string | null;
   onUpload: (file: File, languageHint: LanguageHint) => void;
+  onImportUrl: (videoUrl: string, languageHint: LanguageHint) => void;
   onViewAll: () => void;
   onOpenJob: (job: VideoJob) => void;
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [languageHint, setLanguageHint] = useState<LanguageHint>('auto');
+  const [videoUrl, setVideoUrl] = useState('');
+  const [urlError, setUrlError] = useState<string | null>(null);
   const recentJobs = jobs.slice(0, 5);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -896,6 +997,29 @@ const Dashboard = ({
     if (!isUploading) {
       fileInputRef.current?.click();
     }
+  };
+
+  const handleImportUrl = () => {
+    setUrlError(null);
+    const normalizedUrl = videoUrl.trim();
+    if (!normalizedUrl) {
+      setUrlError('Enter a video URL to import.');
+      return;
+    }
+
+    try {
+      const parsedUrl = new URL(normalizedUrl);
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        setUrlError('Only http and https video links are supported.');
+        return;
+      }
+    } catch {
+      setUrlError('Enter a valid video URL.');
+      return;
+    }
+
+    onImportUrl(normalizedUrl, languageHint);
+    setVideoUrl('');
   };
 
   return (
@@ -935,21 +1059,51 @@ const Dashboard = ({
         </div>
       )}
 
-      {/* Upload Zone */}
-      <motion.div 
-        whileHover={{ scale: 1.01 }}
-        className="glass-panel p-16 mb-12 flex flex-col items-center justify-center border-dashed border-2 border-white/20 hover:border-neon-cyan/50 transition-all cursor-pointer group"
-        onClick={triggerUpload}
-      >
-        <div className="w-20 h-20 rounded-full bg-neon-cyan/10 flex items-center justify-center mb-6 group-hover:bg-neon-cyan/20 transition-colors">
-          <Upload className="text-neon-cyan" size={40} />
+      {urlError && (
+        <div className="mb-6 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-5 py-4 text-sm text-amber-100">
+          {urlError}
         </div>
-        <h2 className="text-2xl font-bold mb-2">Upload New Video</h2>
-        <p className="text-white/40 mb-8">Whisper transcription runs remotely and supports English plus Tagalog code-switching.</p>
-        <Button variant="secondary" className="group-hover:bg-white group-hover:text-midnight" disabled={isUploading}>
-          Select Files
-        </Button>
-      </motion.div>
+      )}
+
+      {/* Upload Zone */}
+      <div className="grid gap-6 mb-12 lg:grid-cols-2">
+        <motion.div 
+          whileHover={{ scale: 1.01 }}
+          className="glass-panel p-12 flex flex-col items-center justify-center border-dashed border-2 border-white/20 hover:border-neon-cyan/50 transition-all cursor-pointer group"
+          onClick={triggerUpload}
+        >
+          <div className="w-20 h-20 rounded-full bg-neon-cyan/10 flex items-center justify-center mb-6 group-hover:bg-neon-cyan/20 transition-colors">
+            <Upload className="text-neon-cyan" size={40} />
+          </div>
+          <h2 className="text-2xl font-bold mb-2">Upload Video File</h2>
+          <p className="text-white/40 mb-8 text-center">Send a local video file from your device for transcription and analysis.</p>
+          <Button variant="secondary" className="group-hover:bg-white group-hover:text-midnight" disabled={isUploading}>
+            {isUploading ? 'Processing...' : 'Select Files'}
+          </Button>
+        </motion.div>
+
+        <div className="glass-panel p-8 border border-white/10">
+          <div className="mb-6">
+            <div className="w-14 h-14 rounded-2xl bg-neon-purple/10 flex items-center justify-center mb-4 border border-neon-purple/20">
+              <ArrowRight className="text-neon-purple" size={28} />
+            </div>
+            <h2 className="text-2xl font-bold mb-2">Import From Link</h2>
+            <p className="text-white/40">Paste a YouTube or other `yt-dlp` supported video URL. The backend downloads the source video first, then runs the same pipeline.</p>
+          </div>
+          <div className="space-y-4">
+            <input
+              type="url"
+              value={videoUrl}
+              onChange={(event) => setVideoUrl(event.target.value)}
+              placeholder="https://www.youtube.com/watch?v=..."
+              className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/25 focus:outline-none focus:border-neon-cyan/50"
+            />
+            <Button variant="neon" className="w-full" onClick={handleImportUrl} disabled={isUploading}>
+              {isUploading ? 'Importing...' : 'Import Link'}
+            </Button>
+          </div>
+        </div>
+      </div>
 
       {/* Recent Uploads */}
       <section>
@@ -990,7 +1144,10 @@ const Dashboard = ({
                       <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center">
                         <Play size={16} className="text-white/60" />
                       </div>
-                      <span className="font-medium">{job.original_filename}</span>
+                      <div>
+                        <span className="font-medium block">{job.original_filename}</span>
+                        <span className="text-xs text-white/35 uppercase tracking-widest">{job.source_type === 'url' ? 'Imported Link' : 'File Upload'}</span>
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
@@ -1210,22 +1367,42 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
 
   const actionItems = job?.action_items ?? [];
   const summaryText = job?.summary ?? 'No summary generated yet.';
-  const allTranscriptEntries = useMemo(() => {
+  const transcriptSegments = useMemo(() => {
+    const rawSegments = job?.transcript_segments ?? [];
+    const normalizedSegments = rawSegments
+      .map((segment, index) => ({
+        id: segment.id ?? index + 1,
+        start: typeof segment.start === 'number' ? segment.start : null,
+        end: typeof segment.end === 'number' ? segment.end : null,
+        text: (segment.text ?? '').trim(),
+      }))
+      .filter((segment) => segment.text);
+
+    if (normalizedSegments.length > 0) {
+      return normalizedSegments;
+    }
+
     const transcript = job?.transcript ?? '';
     return transcript
       .split(/\n+/)
       .map((line) => line.trim())
-      .filter(Boolean);
-  }, [job?.transcript]);
+      .filter(Boolean)
+      .map((line, index) => ({
+        id: index + 1,
+        start: null,
+        end: null,
+        text: line,
+      }));
+  }, [job?.transcript, job?.transcript_segments]);
 
   const transcriptEntries = useMemo(() => {
     if (!searchTerm.trim()) {
-      return allTranscriptEntries;
+      return transcriptSegments;
     }
 
     const normalizedSearch = searchTerm.toLowerCase();
-    return allTranscriptEntries.filter((line) => line.toLowerCase().includes(normalizedSearch));
-  }, [allTranscriptEntries, searchTerm]);
+    return transcriptSegments.filter((segment) => segment.text.toLowerCase().includes(normalizedSearch));
+  }, [transcriptSegments, searchTerm]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(summaryText);
@@ -1287,6 +1464,16 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
             <span className="text-white/60">{job?.original_filename ?? 'No analysis selected'}</span>
           </div>
           <h1 className="text-3xl font-bold">{job?.original_filename ?? 'Analysis Review'}</h1>
+          {job?.source_type === 'url' && job.source_url && (
+            <a
+              href={job.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-flex text-sm text-neon-cyan hover:underline"
+            >
+              Open original video link
+            </a>
+          )}
         </div>
         <div className="flex gap-3 print:hidden">
           <Button variant="secondary" className="px-5 py-2 text-sm" onClick={handleExportPDF}>Export PDF</Button>
@@ -1334,7 +1521,7 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
             <div className="grid grid-cols-3 gap-4">
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
                 <p className="text-xs text-white/40 mb-1">Transcript Lines</p>
-                <p className="text-lg font-bold">{allTranscriptEntries.length}</p>
+                <p className="text-lg font-bold">{transcriptSegments.length}</p>
               </div>
               <div className="p-4 rounded-xl bg-white/5 border border-white/5">
                 <p className="text-xs text-white/40 mb-1">Sentiment</p>
@@ -1446,15 +1633,25 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                     />
                   </div>
 
+                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/45">
+                    Transcript view uses Whisper timestamped segments when available. Speaker labels are not shown because speaker diarization is not part of the current pipeline.
+                  </div>
+
                   <div className="space-y-6">
                     {transcriptEntries.length > 0 ? transcriptEntries.map((entry, i) => (
-                      <div key={i} className="group cursor-pointer">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-xs font-mono text-neon-cyan">Line {i + 1}</span>
-                          <span className="text-xs font-bold text-white/40 uppercase tracking-wider">Transcript</span>
+                      <div key={`${entry.id}-${i}`} className="group cursor-pointer rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          <span className="text-xs font-mono text-neon-cyan">
+                            {entry.start !== null || entry.end !== null
+                              ? `${formatTimestamp(entry.start)} - ${formatTimestamp(entry.end)}`
+                              : `Segment ${i + 1}`}
+                          </span>
+                          <span className="text-xs font-bold text-white/40 uppercase tracking-wider">
+                            {entry.start !== null || entry.end !== null ? 'Timestamp' : 'Transcript'}
+                          </span>
                         </div>
                         <p className="text-sm text-white/70 leading-relaxed group-hover:text-white transition-colors">
-                          {entry}
+                          {entry.text}
                         </p>
                       </div>
                     )) : (
@@ -1598,6 +1795,31 @@ export default function App() {
     }
   }, [handleUnauthorized, loadJobs, user]);
 
+  const handleImportVideoUrl = useCallback(async (videoUrl: string, languageHint: LanguageHint) => {
+    if (!user) {
+      setJobsError('Sign in before importing a video link.');
+      setCurrentScreen('auth');
+      return;
+    }
+
+    setIsUploading(true);
+    setJobsError(null);
+
+    try {
+      const response = await uploadVideoUrl(videoUrl, languageHint);
+      setActiveJobId(response.id);
+      setSelectedJob(null);
+      setCurrentScreen('analysis');
+      void loadJobs();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Video link import failed';
+      handleUnauthorized(message);
+      setJobsError(message);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [handleUnauthorized, loadJobs, user]);
+
   const handleOpenJob = useCallback(async (job: VideoJob) => {
     setActiveJobId(job.id);
     try {
@@ -1652,6 +1874,7 @@ export default function App() {
               isUploading={isUploading}
               uploadError={jobsError}
               onUpload={handleUpload}
+              onImportUrl={handleImportVideoUrl}
               onViewAll={() => setCurrentScreen('history')}
               onOpenJob={handleOpenJob}
             />

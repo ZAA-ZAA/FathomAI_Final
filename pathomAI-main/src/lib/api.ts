@@ -45,6 +45,8 @@ export interface PasswordChangePayload {
 export interface VideoJob {
   id: string;
   user_id: string;
+  source_type: string;
+  source_url: string | null;
   original_filename: string;
   content_type: string | null;
   file_size_bytes: number;
@@ -53,6 +55,12 @@ export interface VideoJob {
   detected_language: string | null;
   status: VideoJobStatus;
   transcript?: string | null;
+  transcript_segments?: Array<{
+    id?: number | null;
+    start?: number | null;
+    end?: number | null;
+    text: string;
+  }>;
   summary: string | null;
   sentiment: string | null;
   action_items: string[];
@@ -228,4 +236,20 @@ export async function uploadVideo(
   });
 
   return parseJson<UploadVideoResponse>(response);
+}
+
+export async function uploadVideoUrl(
+  videoUrl: string,
+  languageHint: 'auto' | 'en' | 'tl' = 'auto',
+): Promise<UploadVideoResponse> {
+  return fetchJson<UploadVideoResponse>('/api/videos/import', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      video_url: videoUrl,
+      language_hint: languageHint,
+    }),
+  });
 }
