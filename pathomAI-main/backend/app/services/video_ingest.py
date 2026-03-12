@@ -3,14 +3,19 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
+import gdown
 from yt_dlp import DownloadError, YoutubeDL
 
 from app.core.config import settings
 
 
 def download_video_from_url(video_url: str, destination_dir: Path) -> tuple[Path, dict[str, Any]]:
+    if _is_google_drive_url(video_url):
+        return _download_google_drive_video(video_url, destination_dir)
+
     destination_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(destination_dir / "%(title).120B-%(id)s.%(ext)s")
 
@@ -59,6 +64,64 @@ def download_video_from_url(video_url: str, destination_dir: Path) -> tuple[Path
     }
 
 
+def _download_google_drive_video(video_url: str, destination_dir: Path) -> tuple[Path, dict[str, Any]]:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    if "/folders/" in video_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google Drive folder links are not supported. Provide a share link for a single public video file.",
+        )
+
+    output_path = destination_dir / "google-drive-import"
+    try:
+        downloaded_path = gdown.download(
+            url=video_url,
+            output=str(output_path),
+            quiet=True,
+            fuzzy=True,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Unable to download the Google Drive file. Make sure the link is a valid public file-share link "
+                f"and not private or expired. Details: {exc}"
+            ),
+        ) from exc
+
+    if not downloaded_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to download the Google Drive file. Make sure the link points to a public video file.",
+        )
+
+    resolved_path = Path(downloaded_path)
+    if not resolved_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google Drive download completed but the file could not be located on disk.",
+        )
+
+    file_size = resolved_path.stat().st_size
+    if file_size > settings.max_upload_size_bytes:
+        resolved_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Downloaded video exceeds the {settings.max_upload_size_bytes // (1024 * 1024)} MB limit",
+        )
+
+    return resolved_path, {
+        "extractor": "google_drive",
+        "extractor_key": "GoogleDrive",
+        "title": resolved_path.stem,
+        "webpage_url": video_url,
+        "uploader": "Google Drive",
+        "duration": None,
+        "thumbnail": None,
+        "content_type": mimetypes.guess_type(resolved_path.name)[0],
+    }
+
+
 def build_filename_from_download(download_metadata: dict[str, Any], file_path: Path) -> str:
     title = str(download_metadata.get("title") or "").strip()
     extension = file_path.suffix or ".mp4"
@@ -87,3 +150,8 @@ def _resolve_downloaded_path(info: dict[str, Any], destination_dir: Path) -> Pat
         return files[0]
 
     raise FileNotFoundError("Downloaded video file could not be located")
+
+
+def _is_google_drive_url(video_url: str) -> bool:
+    parsed = urlparse(video_url)
+    return parsed.netloc.lower() in {"drive.google.com", "docs.google.com"}

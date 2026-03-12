@@ -28,6 +28,26 @@ class AuthResponse(BaseModel):
     user: AuthUserRead
 
 
+class ApiKeyRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    key_preview: str
+    created_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+class ApiKeyCreateRequest(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=120)]
+
+
+class ApiKeyCreateResponse(BaseModel):
+    api_key: str
+    api_key_record: ApiKeyRead
+
+
 class SignUpRequest(BaseModel):
     full_name: DisplayName
     email: EmailStr
@@ -88,6 +108,9 @@ class VideoJobSummary(BaseModel):
 class VideoJobRead(VideoJobSummary):
     transcript: str | None = None
     transcript_segments: list[dict] = Field(default_factory=list)
+    custom_summary_prompt: str | None = None
+    custom_summary_text: str | None = None
+    custom_summary_updated_at: datetime | None = None
     video_metadata: dict = Field(default_factory=dict)
 
 
@@ -95,6 +118,10 @@ class AgentAnalysisResult(BaseModel):
     summary: str
     action_items: list[str] = Field(default_factory=list)
     sentiment: str
+
+
+class AgentCustomSummaryResult(BaseModel):
+    summary: str
 
 
 class ChatMessageInput(BaseModel):
@@ -128,6 +155,16 @@ class VideoChatSuggestionRequest(BaseModel):
 
 class VideoChatSuggestionResponse(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
+
+
+class CustomSummaryRequest(BaseModel):
+    instruction: str = Field(min_length=5, max_length=2000)
+
+
+class CustomSummaryResponse(BaseModel):
+    summary: str
+    instruction: str
+    updated_at: datetime
 
 
 class TranscriptionResult(BaseModel):

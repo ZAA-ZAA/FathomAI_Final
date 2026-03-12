@@ -55,6 +55,20 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class ApiKeyRecord(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    key_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    key_preview: Mapped[str] = mapped_column(String(32))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class VideoJob(Base):
     __tablename__ = "video_jobs"
 
@@ -75,6 +89,9 @@ class VideoJob(Base):
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript_segments: Mapped[list[dict]] = mapped_column(JSON, default=list)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom_summary_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom_summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom_summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sentiment: Mapped[str | None] = mapped_column(String(64), nullable=True)
     action_items: Mapped[list[str]] = mapped_column(JSON, default=list)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

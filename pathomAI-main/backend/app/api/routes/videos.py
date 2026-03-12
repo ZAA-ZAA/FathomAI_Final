@@ -14,11 +14,13 @@ from app.core.config import settings
 from app.db import get_db
 from app.models import JobStatus, VideoChatMessageRecord, VideoJob
 from app.schemas import (
-    VideoChatRequest,
     VideoChatMessageRead,
+    VideoChatRequest,
     VideoChatResponse,
     VideoChatSuggestionRequest,
     VideoChatSuggestionResponse,
+    CustomSummaryRequest,
+    CustomSummaryResponse,
     VideoJobRead,
     VideoJobSummary,
     VideoUploadResponse,
@@ -26,6 +28,7 @@ from app.schemas import (
 )
 from app.services.agent_client import (
     AgentServiceError,
+    request_custom_summary,
     request_transcript_chat,
     request_transcript_chat_suggestions,
 )
@@ -184,15 +187,31 @@ def retry_video_job(
     if job.status != JobStatus.FAILED.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only failed jobs can be retried")
 
-    file_path = Path(job.storage_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original video file is missing")
+    if job.source_type == "url":
+        if not job.source_url:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The original source URL is missing")
+
+        file_path = Path(job.storage_path) if job.storage_path else None
+        if file_path and not file_path.exists():
+            job.storage_path = ""
+            job.stored_filename = job.original_filename
+            job.content_type = None
+            job.file_size_bytes = 0
+            job.duration_seconds = None
+            job.video_metadata = {}
+    else:
+        file_path = Path(job.storage_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original video file is missing")
 
     job.status = JobStatus.QUEUED.value
     job.error_message = None
     job.transcript = None
     job.transcript_segments = []
     job.summary = None
+    job.custom_summary_prompt = None
+    job.custom_summary_text = None
+    job.custom_summary_updated_at = None
     job.sentiment = None
     job.action_items = []
     job.detected_language = None
@@ -266,6 +285,42 @@ def suggest_video_questions(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
+@router.post("/{job_id}/summary/regenerate", response_model=CustomSummaryResponse)
+def regenerate_video_summary(
+    job_id: str,
+    request: CustomSummaryRequest,
+    db: Session = Depends(get_db),
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> CustomSummaryResponse:
+    job = _get_tenant_job(db, auth_context, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video job not found")
+    if job.status != JobStatus.COMPLETED.value or not _job_has_chat_context(job):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom summary is only available for completed jobs")
+
+    try:
+        response = request_custom_summary(
+            transcript=_job_transcript_text(job),
+            instruction=request.instruction.strip(),
+            video_title=job.original_filename,
+            source_language=job.detected_language or job.language_hint,
+        )
+    except AgentServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    updated_at = datetime.now(timezone.utc)
+    job.custom_summary_prompt = request.instruction.strip()
+    job.custom_summary_text = response.summary
+    job.custom_summary_updated_at = updated_at
+    db.commit()
+
+    return CustomSummaryResponse(
+        summary=response.summary,
+        instruction=job.custom_summary_prompt,
+        updated_at=updated_at,
+    )
+
+
 @router.get("/{job_id}/chat/messages", response_model=list[VideoChatMessageRead])
 def list_video_chat_messages(
     job_id: str,
@@ -313,6 +368,16 @@ def _job_has_chat_context(job: VideoJob) -> bool:
     if (job.transcript or "").strip():
         return True
     return any(str(segment.get("text", "")).strip() for segment in (job.transcript_segments or []))
+
+
+def _job_transcript_text(job: VideoJob) -> str:
+    if (job.transcript or "").strip():
+        return (job.transcript or "").strip()
+    return "\n".join(
+        text
+        for text in (str(segment.get("text", "")).strip() for segment in (job.transcript_segments or []))
+        if text
+    )
 
 
 def _store_chat_message(

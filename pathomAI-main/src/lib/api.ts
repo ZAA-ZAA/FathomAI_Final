@@ -19,6 +19,20 @@ export interface AuthResponse {
   user: AuthUser;
 }
 
+export interface ApiKeyRecord {
+  id: string;
+  name: string;
+  key_preview: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface ApiKeyCreateResponse {
+  api_key: string;
+  api_key_record: ApiKeyRecord;
+}
+
 export interface SignUpPayload {
   full_name: string;
   email: string;
@@ -62,6 +76,9 @@ export interface VideoJob {
     text: string;
   }>;
   summary: string | null;
+  custom_summary_prompt?: string | null;
+  custom_summary_text?: string | null;
+  custom_summary_updated_at?: string | null;
   sentiment: string | null;
   action_items: string[];
   error_message: string | null;
@@ -91,6 +108,12 @@ export interface VideoChatResponse {
 
 export interface VideoChatSuggestionResponse {
   suggested_questions: string[];
+}
+
+export interface CustomSummaryResponse {
+  summary: string;
+  instruction: string;
+  updated_at: string;
 }
 
 const AUTH_TOKEN_KEY = 'pathomai_auth_token';
@@ -211,6 +234,26 @@ export async function signOut(): Promise<void> {
   }
 }
 
+export async function fetchApiKeys(): Promise<ApiKeyRecord[]> {
+  return fetchJson<ApiKeyRecord[]>('/api/auth/api-keys');
+}
+
+export async function createApiKey(name: string): Promise<ApiKeyCreateResponse> {
+  return fetchJson<ApiKeyCreateResponse>('/api/auth/api-keys', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function revokeApiKey(apiKeyId: string): Promise<void> {
+  await fetchJson<{ message: string }>(`/api/auth/api-keys/${apiKeyId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function fetchVideoJobs(): Promise<VideoJob[]> {
   return fetchJson<VideoJob[]>('/api/videos');
 }
@@ -287,6 +330,16 @@ export async function fetchVideoChatSuggestions(
 
 export async function fetchVideoChatMessages(jobId: string): Promise<VideoChatMessage[]> {
   return fetchJson<VideoChatMessage[]>(`/api/videos/${jobId}/chat/messages`);
+}
+
+export async function regenerateVideoSummary(jobId: string, instruction: string): Promise<CustomSummaryResponse> {
+  return fetchJson<CustomSummaryResponse>(`/api/videos/${jobId}/summary/regenerate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ instruction }),
+  });
 }
 
 export async function sendVideoChatMessage(

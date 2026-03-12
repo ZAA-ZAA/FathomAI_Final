@@ -8,6 +8,7 @@ import httpx
 from app.core.config import settings
 from app.schemas import (
     AgentAnalysisResult,
+    AgentCustomSummaryResult,
     VideoChatResponse,
     VideoChatSuggestionResponse,
 )
@@ -107,6 +108,25 @@ def request_transcript_chat_suggestions(
     }
 
     return _post_with_retry(url, payload, VideoChatSuggestionResponse)
+
+
+def request_custom_summary(
+    transcript: str,
+    instruction: str,
+    video_title: str,
+    source_language: str | None,
+) -> CustomSummaryResponse:
+    if not transcript.strip():
+        raise AgentServiceError("Transcript is empty; custom summary is unavailable")
+
+    url = f"{settings.agent_service_url.rstrip('/')}/internal/custom-summary"
+    payload: dict[str, Any] = {
+        "transcript": transcript,
+        "instruction": instruction,
+        "video_title": video_title,
+        "source_language": source_language,
+    }
+    return _post_with_retry(url, payload, AgentCustomSummaryResult)
 
 
 def _post_with_retry(url: str, payload: dict[str, Any], response_model):

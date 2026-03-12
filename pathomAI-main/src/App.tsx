@@ -27,12 +27,16 @@ import {
   Bot,
   MessageSquare,
   Send,
-  LoaderCircle
+  LoaderCircle,
+  KeyRound,
+  RefreshCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   changePassword,
   clearStoredAuthToken,
+  createApiKey,
+  fetchApiKeys,
   fetchCurrentUser,
   fetchVideoChatMessages,
   fetchVideoChatSuggestions,
@@ -40,7 +44,9 @@ import {
   fetchVideoJobs,
   fetchVideoSourceUrl,
   getStoredAuthToken,
+  regenerateVideoSummary,
   retryVideoJob,
+  revokeApiKey,
   sendVideoChatMessage,
   signIn,
   signOut,
@@ -48,7 +54,9 @@ import {
   updateProfile,
   uploadVideo,
   uploadVideoUrl,
+  type ApiKeyRecord,
   type AuthUser,
+  type CustomSummaryResponse,
   type VideoChatMessage,
   type VideoJob,
   type VideoJobStatus,
@@ -742,6 +750,11 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [tenantName, setTenantName] = useState(user?.tenantName || '');
+  const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
+  const [newApiKeyName, setNewApiKeyName] = useState('CLI Access');
+  const [newApiKeyValue, setNewApiKeyValue] = useState<string | null>(null);
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  const [apiKeyMessage, setApiKeyMessage] = useState<string | null>(null);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -751,12 +764,32 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
   const [securityError, setSecurityError] = useState<string | null>(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
+  const [isApiKeysLoading, setIsApiKeysLoading] = useState(false);
+  const [isCreatingApiKey, setIsCreatingApiKey] = useState(false);
+  const [revokingApiKeyId, setRevokingApiKeyId] = useState<string | null>(null);
 
   useEffect(() => {
     setName(user?.name || '');
     setEmail(user?.email || '');
     setTenantName(user?.tenantName || '');
   }, [user]);
+
+  useEffect(() => {
+    const loadApiKeys = async () => {
+      setIsApiKeysLoading(true);
+      setApiKeyError(null);
+      try {
+        const keys = await fetchApiKeys();
+        setApiKeys(keys);
+      } catch (error) {
+        setApiKeyError(error instanceof Error ? error.message : 'Unable to load API keys');
+      } finally {
+        setIsApiKeysLoading(false);
+      }
+    };
+
+    void loadApiKeys();
+  }, []);
 
   const handleSaveProfile = async () => {
     setProfileError(null);
@@ -825,11 +858,49 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
     }
   };
 
+  const handleCreateApiKey = async () => {
+    setApiKeyError(null);
+    setApiKeyMessage(null);
+    setNewApiKeyValue(null);
+
+    if (newApiKeyName.trim().length < 2) {
+      setApiKeyError('API key name must be at least 2 characters.');
+      return;
+    }
+
+    setIsCreatingApiKey(true);
+    try {
+      const response = await createApiKey(newApiKeyName.trim());
+      setApiKeys((currentKeys) => [response.api_key_record, ...currentKeys]);
+      setNewApiKeyValue(response.api_key);
+      setApiKeyMessage('New API key generated. Copy it now; this exact value is only shown once.');
+    } catch (error) {
+      setApiKeyError(error instanceof Error ? error.message : 'Unable to create API key');
+    } finally {
+      setIsCreatingApiKey(false);
+    }
+  };
+
+  const handleRevokeApiKey = async (apiKeyId: string) => {
+    setApiKeyError(null);
+    setApiKeyMessage(null);
+    setRevokingApiKeyId(apiKeyId);
+    try {
+      await revokeApiKey(apiKeyId);
+      setApiKeys((currentKeys) => currentKeys.filter((record) => record.id !== apiKeyId));
+      setApiKeyMessage('API key revoked');
+    } catch (error) {
+      setApiKeyError(error instanceof Error ? error.message : 'Unable to revoke API key');
+    } finally {
+      setRevokingApiKeyId(null);
+    }
+  };
+
   return (
     <div className="flex-1 p-10 overflow-y-auto">
       <header className="mb-10">
         <h1 className="text-4xl font-bold mb-2">Account Settings</h1>
-        <p className="text-white/50">Manage your profile, workspace name, and password.</p>
+        <p className="text-white/50">Manage your profile, workspace name, password, and API access.</p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -943,6 +1014,71 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
             <p className="text-sm text-white/40 mb-4">Your workspace name is the tenant identity for this project. Uploaded videos and AI analysis results are isolated by workspace.</p>
             <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
               Workspace: <span className="text-white font-medium">{tenantName || 'Not available'}</span>
+            </div>
+          </section>
+
+          <section className="glass-panel p-8 border-white/10">
+            <div className="mb-4 flex items-center gap-3">
+              <KeyRound size={18} className="text-neon-cyan" />
+              <h3 className="text-xl font-bold">API Access</h3>
+            </div>
+            <p className="mb-4 text-sm text-white/40">
+              Use an API key with `X-API-Key` in curl or backend integrations. The same jobs will appear in the UI because they use the same tenant and database.
+            </p>
+
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={newApiKeyName}
+                onChange={(event) => setNewApiKeyName(event.target.value)}
+                placeholder="API key name"
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/20 focus:border-neon-cyan/50 focus:outline-none"
+              />
+              <Button variant="neon" onClick={handleCreateApiKey} disabled={isCreatingApiKey}>
+                {isCreatingApiKey ? 'Generating...' : 'Generate API Key'}
+              </Button>
+            </div>
+
+            {newApiKeyValue && (
+              <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                <div className="mb-2 text-[11px] uppercase tracking-[0.25em] text-emerald-300">Copy This API Key Now</div>
+                <code className="block break-all text-sm text-emerald-100">{newApiKeyValue}</code>
+              </div>
+            )}
+
+            {apiKeyMessage && <p className="mt-4 text-sm text-emerald-400">{apiKeyMessage}</p>}
+            {apiKeyError && <p className="mt-4 text-sm text-red-300">{apiKeyError}</p>}
+
+            <div className="mt-6 space-y-3">
+              <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Active Keys</div>
+              {isApiKeysLoading ? (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50">Loading API keys...</div>
+              ) : apiKeys.length > 0 ? apiKeys.map((record) => (
+                <div key={record.id} className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-medium text-white">{record.name}</div>
+                      <div className="mt-1 font-mono text-xs text-white/45">{record.key_preview}</div>
+                      <div className="mt-2 text-xs text-white/35">
+                        Created {formatRelativeTime(record.created_at)}
+                        {record.last_used_at ? ` • Last used ${formatRelativeTime(record.last_used_at)}` : ' • Never used'}
+                      </div>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      className="px-4 py-2 text-xs"
+                      onClick={() => void handleRevokeApiKey(record.id)}
+                      disabled={revokingApiKeyId === record.id}
+                    >
+                      {revokingApiKeyId === record.id ? 'Revoking...' : 'Revoke'}
+                    </Button>
+                  </div>
+                </div>
+              )) : (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50">
+                  No API keys yet.
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -1096,7 +1232,7 @@ const Dashboard = ({
               <ArrowRight className="text-neon-purple" size={28} />
             </div>
             <h2 className="text-2xl font-bold mb-2">Import From Link</h2>
-            <p className="text-white/40">Paste a YouTube or other `yt-dlp` supported video URL. The backend downloads the source video first, then runs the same pipeline.</p>
+            <p className="text-white/40">Paste a YouTube, public Google Drive, or other supported video URL. The backend downloads the source video first, then runs the same pipeline.</p>
           </div>
           <div className="space-y-4">
             <input
@@ -1375,6 +1511,10 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false);
   const [isChatSending, setIsChatSending] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [customSummaryInstruction, setCustomSummaryInstruction] = useState('');
+  const [customSummaryResult, setCustomSummaryResult] = useState<CustomSummaryResponse | null>(null);
+  const [customSummaryError, setCustomSummaryError] = useState<string | null>(null);
+  const [isCustomSummaryLoading, setIsCustomSummaryLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -1432,6 +1572,29 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     && (((job.transcript ?? '').trim()) || transcriptSegments.length > 0),
   );
   const chatUnavailable = !hasChatContext;
+
+  const handleRegenerateSummary = useCallback(async () => {
+    if (!job?.id) {
+      return;
+    }
+
+    const instruction = customSummaryInstruction.trim();
+    if (instruction.length < 5) {
+      setCustomSummaryError('Enter a more specific instruction for the focused summary.');
+      return;
+    }
+
+    setIsCustomSummaryLoading(true);
+    setCustomSummaryError(null);
+    try {
+      const response = await regenerateVideoSummary(job.id, instruction);
+      setCustomSummaryResult(response);
+    } catch (error) {
+      setCustomSummaryError(error instanceof Error ? error.message : 'Unable to regenerate the custom summary');
+    } finally {
+      setIsCustomSummaryLoading(false);
+    }
+  }, [customSummaryInstruction, job?.id]);
 
   const loadSuggestions = useCallback(async (jobId: string, existingQuestions: string[]) => {
     setIsSuggestionsLoading(true);
@@ -1552,6 +1715,17 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     setChatDraft('');
     setChatError(null);
     setPendingQuestion(null);
+    setCustomSummaryInstruction(job?.custom_summary_prompt ?? '');
+    setCustomSummaryResult(
+      job?.custom_summary_text
+        ? {
+            summary: job.custom_summary_text,
+            instruction: job.custom_summary_prompt ?? '',
+            updated_at: job.custom_summary_updated_at ?? new Date().toISOString(),
+          }
+        : null,
+    );
+    setCustomSummaryError(null);
 
     setChatMessages([]);
     setSuggestedQuestions([]);
@@ -1740,6 +1914,48 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                           No action items were extracted from this transcript.
                         </div>
                       )}
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+                    <div className="mb-4 flex items-center justify-between gap-4">
+                      <div>
+                        <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest">Focused Summary</h4>
+                        <p className="mt-2 text-sm text-white/50">
+                          Regenerate a summary for only one part of the video, such as a topic, section, ingredient list, or decision block.
+                        </p>
+                      </div>
+                      <RefreshCcw size={18} className="text-neon-cyan" />
+                    </div>
+
+                    <div className="space-y-3">
+                      <textarea
+                        value={customSummaryInstruction}
+                        onChange={(event) => setCustomSummaryInstruction(event.target.value)}
+                        rows={3}
+                        placeholder="Example: Summarize only the discussion about the second dish and list the ingredients mentioned."
+                        className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-neon-cyan/50 focus:outline-none"
+                      />
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <Button variant="neon" onClick={() => void handleRegenerateSummary()} disabled={isCustomSummaryLoading}>
+                          {isCustomSummaryLoading ? 'Regenerating...' : 'Regenerate Focused Summary'}
+                        </Button>
+                        {customSummaryError && <span className="text-sm text-red-300">{customSummaryError}</span>}
+                        {customSummaryResult?.updated_at && (
+                          <span className="text-xs uppercase tracking-[0.25em] text-white/35">
+                            Updated {formatRelativeTime(customSummaryResult.updated_at)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4">
+                      <div className="mb-3 text-[11px] uppercase tracking-[0.25em] text-white/35">
+                        {customSummaryResult ? 'Focused Summary Result' : 'No Focused Summary Yet'}
+                      </div>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/80">
+                        {customSummaryResult?.summary ?? 'Use a custom instruction to generate a summary for a specific portion of this video.'}
+                      </p>
                     </div>
                   </section>
                 </motion.div>

@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Tenant, User
 from app.schemas import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyRead,
     ApiMessage,
     AuthResponse,
     AuthUserRead,
@@ -17,10 +20,12 @@ from app.schemas import (
 )
 from app.services.auth import (
     AuthContext,
+    create_api_key,
     create_auth_session,
     delete_auth_session,
     generate_unique_workspace_slug,
     hash_password,
+    revoke_api_key,
     require_auth_context,
     verify_password,
 )
@@ -140,8 +145,48 @@ def logout(
     context: AuthContext = Depends(require_auth_context),
     db: Session = Depends(get_db),
 ) -> ApiMessage:
-    delete_auth_session(db, context.access_token)
+    if context.access_token:
+        delete_auth_session(db, context.access_token)
     return ApiMessage(message="Logged out")
+
+
+@router.get("/api-keys", response_model=list[ApiKeyRead])
+def list_api_keys(
+    context: AuthContext = Depends(require_auth_context),
+    db: Session = Depends(get_db),
+) -> list:
+    from app.models import ApiKeyRecord
+
+    statement = select(ApiKeyRecord).where(
+        ApiKeyRecord.user_id == context.user_id,
+        ApiKeyRecord.revoked_at.is_(None),
+    ).order_by(ApiKeyRecord.created_at.desc())
+    return list(db.scalars(statement).all())
+
+
+@router.post("/api-keys", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
+def generate_api_key(
+    request: ApiKeyCreateRequest,
+    context: AuthContext = Depends(require_auth_context),
+    db: Session = Depends(get_db),
+) -> ApiKeyCreateResponse:
+    user = db.get(User, context.user_id)
+    tenant = db.get(Tenant, context.tenant_id)
+    if user is None or tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+
+    api_key, record = create_api_key(db, user, tenant, request.name)
+    return ApiKeyCreateResponse(api_key=api_key, api_key_record=record)
+
+
+@router.delete("/api-keys/{api_key_id}", response_model=ApiMessage)
+def delete_api_key(
+    api_key_id: str,
+    context: AuthContext = Depends(require_auth_context),
+    db: Session = Depends(get_db),
+) -> ApiMessage:
+    revoke_api_key(db, api_key_id, context.user_id)
+    return ApiMessage(message="API key revoked")
 
 
 def _build_auth_user(context: AuthContext) -> AuthUserRead:

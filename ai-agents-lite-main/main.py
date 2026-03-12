@@ -7,12 +7,14 @@ from openai import OpenAI
 
 from agents import execute_tool_by_name, get_tool_specs
 from app.agents.zoey_agent import create_zoey_agent
+from app.routers.custom_summary import router as custom_summary_router
 from app.routers.transcript_analysis import router as transcript_analysis_router
 from app.routers.transcript_chat import router as transcript_chat_router
 
 app = FastAPI()
 app.include_router(transcript_analysis_router)
 app.include_router(transcript_chat_router)
+app.include_router(custom_summary_router)
 
 
 class ChatRequest(BaseModel):
