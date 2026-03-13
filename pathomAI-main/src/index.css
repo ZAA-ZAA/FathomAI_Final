@@ -44,3 +44,91 @@
 ::-webkit-scrollbar-thumb {
   @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
 }
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 16mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #111827 !important;
+    height: auto !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    background-image: none !important;
+  }
+
+  #root {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  [data-print-root] {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+
+  [data-print-root] > *,
+  [data-print-root] [data-print-panel],
+  [data-print-root] [data-print-section] {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  [data-print-root] .glass-panel,
+  [data-print-panel] {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+
+  [data-print-root] .flex,
+  [data-print-root] .grid {
+    gap: 0 !important;
+  }
+
+  [data-print-root] .overflow-hidden,
+  [data-print-root] .overflow-y-auto,
+  [data-print-root] .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  [data-print-root] .h-full,
+  [data-print-root] .min-h-0,
+  [data-print-root] .flex-1 {
+    min-height: auto !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  [data-print-root] [style] {
+    transform: none !important;
+    max-height: none !important;
+  }
+
+  [data-print-root] [data-print-card] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  [data-print-root] [data-print-overlay] {
+    display: none !important;
+  }
+}

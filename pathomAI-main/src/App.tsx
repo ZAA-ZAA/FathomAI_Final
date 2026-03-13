@@ -23,13 +23,19 @@ import {
   Star,
   Sparkles,
   Copy,
-  Check,
   Bot,
   MessageSquare,
   Send,
   LoaderCircle,
   KeyRound,
-  RefreshCcw
+  RefreshCcw,
+  X,
+  Eye,
+  EyeOff,
+  FileDown,
+  BookOpen,
+  ExternalLink,
+  ClipboardCopy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -63,7 +69,7 @@ import {
 } from './lib/api';
 
 // --- Types ---
-type Screen = 'landing' | 'auth' | 'dashboard' | 'analysis' | 'review' | 'history' | 'settings';
+type Screen = 'landing' | 'auth' | 'dashboard' | 'analysis' | 'review' | 'history' | 'settings' | 'apiGuide';
 
 interface UserProfile {
   id: string;
@@ -146,6 +152,18 @@ const formatRelativeTime = (value: string) => {
   const diffDays = Math.round(diffHours / 24);
   return formatter.format(diffDays, 'day');
 };
+
+const escapeHtml = (value: string) => value
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;')
+  .replaceAll("'", '&#39;');
+
+const formatExportTimestamp = (value = new Date()) => new Intl.DateTimeFormat('en-US', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+}).format(value);
 
 const downloadJsonFile = (filename: string, payload: unknown) => {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -753,8 +771,12 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
   const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
   const [newApiKeyName, setNewApiKeyName] = useState('CLI Access');
   const [newApiKeyValue, setNewApiKeyValue] = useState<string | null>(null);
+  const [generatedApiKeyName, setGeneratedApiKeyName] = useState('');
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const [apiKeyMessage, setApiKeyMessage] = useState<string | null>(null);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [isApiKeyRevealModalOpen, setIsApiKeyRevealModalOpen] = useState(false);
+  const [apiKeyCopied, setApiKeyCopied] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -790,6 +812,22 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
 
     void loadApiKeys();
   }, []);
+
+  useEffect(() => {
+    if (!isApiKeyModalOpen && !isApiKeyRevealModalOpen) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isCreatingApiKey) {
+        setIsApiKeyModalOpen(false);
+        setIsApiKeyRevealModalOpen(false);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isApiKeyModalOpen, isApiKeyRevealModalOpen, isCreatingApiKey]);
 
   const handleSaveProfile = async () => {
     setProfileError(null);
@@ -862,22 +900,45 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
     setApiKeyError(null);
     setApiKeyMessage(null);
     setNewApiKeyValue(null);
+    setApiKeyCopied(false);
 
-    if (newApiKeyName.trim().length < 2) {
+    const normalizedName = newApiKeyName.trim();
+    if (normalizedName.length < 2) {
       setApiKeyError('API key name must be at least 2 characters.');
+      return;
+    }
+    if (normalizedName.length > 120) {
+      setApiKeyError('API key name must be 120 characters or fewer.');
       return;
     }
 
     setIsCreatingApiKey(true);
     try {
-      const response = await createApiKey(newApiKeyName.trim());
+      const response = await createApiKey(normalizedName);
       setApiKeys((currentKeys) => [response.api_key_record, ...currentKeys]);
+      setGeneratedApiKeyName(response.api_key_record.name);
       setNewApiKeyValue(response.api_key);
       setApiKeyMessage('New API key generated. Copy it now; this exact value is only shown once.');
+      setIsApiKeyModalOpen(false);
+      setIsApiKeyRevealModalOpen(true);
     } catch (error) {
       setApiKeyError(error instanceof Error ? error.message : 'Unable to create API key');
     } finally {
       setIsCreatingApiKey(false);
+    }
+  };
+
+  const handleCopyApiKey = async () => {
+    if (!newApiKeyValue) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(newApiKeyValue);
+      setApiKeyCopied(true);
+      window.setTimeout(() => setApiKeyCopied(false), 2000);
+    } catch {
+      setApiKeyError('Unable to copy the API key. Copy it manually from the modal.');
     }
   };
 
@@ -1018,33 +1079,43 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
           </section>
 
           <section className="glass-panel p-8 border-white/10">
-            <div className="mb-4 flex items-center gap-3">
-              <KeyRound size={18} className="text-neon-cyan" />
-              <h3 className="text-xl font-bold">API Access</h3>
-            </div>
-            <p className="mb-4 text-sm text-white/40">
-              Use an API key with `X-API-Key` in curl or backend integrations. The same jobs will appear in the UI because they use the same tenant and database.
-            </p>
-
-            <div className="space-y-3">
-              <input
-                type="text"
-                value={newApiKeyName}
-                onChange={(event) => setNewApiKeyName(event.target.value)}
-                placeholder="API key name"
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/20 focus:border-neon-cyan/50 focus:outline-none"
-              />
-              <Button variant="neon" onClick={handleCreateApiKey} disabled={isCreatingApiKey}>
-                {isCreatingApiKey ? 'Generating...' : 'Generate API Key'}
-              </Button>
-            </div>
-
-            {newApiKeyValue && (
-              <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-                <div className="mb-2 text-[11px] uppercase tracking-[0.25em] text-emerald-300">Copy This API Key Now</div>
-                <code className="block break-all text-sm text-emerald-100">{newApiKeyValue}</code>
+            <div className="mb-4 flex items-start gap-4">
+              <div className="flex items-center gap-3">
+                <KeyRound size={18} className="text-neon-cyan" />
+                <div>
+                  <h3 className="text-xl font-bold">API Access</h3>
+                  <p className="mt-1 text-sm text-white/40">
+                    Each generated key belongs to this account and can call the tenant-scoped API directly with `X-API-Key`.
+                  </p>
+                </div>
               </div>
-            )}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white">Generate a personal API key</div>
+                  <p className="mt-1 text-sm text-white/45">
+                    The full key is shown only once in a secure modal. Store it immediately in your password manager or environment variables.
+                  </p>
+                </div>
+                <Button
+                  variant="neon"
+                  className="rounded-2xl px-5 py-3"
+                  onClick={() => {
+                    setApiKeyError(null);
+                    setApiKeyMessage(null);
+                    setGeneratedApiKeyName('');
+                    setNewApiKeyValue(null);
+                    setApiKeyCopied(false);
+                    setNewApiKeyName('CLI Access');
+                    setIsApiKeyModalOpen(true);
+                  }}
+                >
+                  Generate API Key
+                </Button>
+              </div>
+            </div>
 
             {apiKeyMessage && <p className="mt-4 text-sm text-emerald-400">{apiKeyMessage}</p>}
             {apiKeyError && <p className="mt-4 text-sm text-red-300">{apiKeyError}</p>}
@@ -1061,7 +1132,7 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
                       <div className="mt-1 font-mono text-xs text-white/45">{record.key_preview}</div>
                       <div className="mt-2 text-xs text-white/35">
                         Created {formatRelativeTime(record.created_at)}
-                        {record.last_used_at ? ` • Last used ${formatRelativeTime(record.last_used_at)}` : ' • Never used'}
+                        {record.last_used_at ? ` | Last used ${formatRelativeTime(record.last_used_at)}` : ' | Never used'}
                       </div>
                     </div>
                     <Button
@@ -1080,9 +1151,187 @@ const SettingsScreen = ({ user, onUpdateUser }: { user: UserProfile | null; onUp
                 </div>
               )}
             </div>
+
+            <div className="mt-6 flex justify-start">
+              <a
+                href={API_ACCESS_GUIDE_PATH}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-white/65 transition-colors hover:border-neon-cyan/40 hover:text-neon-cyan"
+              >
+                <BookOpen size={14} />
+                Documentation
+                <ExternalLink size={13} />
+              </a>
+            </div>
           </section>
         </div>
       </div>
+
+      <AnimatePresence>
+        {isApiKeyModalOpen && (
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!isCreatingApiKey) {
+                  setIsApiKeyModalOpen(false);
+                }
+              }}
+              className="absolute inset-0 bg-midnight/85 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 16 }}
+              className="glass-panel relative z-10 w-full max-w-xl overflow-hidden p-6"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isCreatingApiKey) {
+                    setIsApiKeyModalOpen(false);
+                  }
+                }}
+                className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/60 transition-colors hover:bg-white/20 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.3em] text-neon-cyan">Create API Key</p>
+                  <h3 className="mt-2 text-2xl font-bold">Name this key for its real-world use</h3>
+                  <p className="mt-3 text-sm leading-relaxed text-white/55">
+                    Examples: `Windows CLI`, `Local Backend Integration`, `CI Upload Job`, or `Postman Sandbox`.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-[0.22em] text-white/40">Key Name</label>
+                  <input
+                    type="text"
+                    value={newApiKeyName}
+                    maxLength={120}
+                    onChange={(event) => setNewApiKeyName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !isCreatingApiKey) {
+                        event.preventDefault();
+                        void handleCreateApiKey();
+                      }
+                    }}
+                    placeholder="CLI Access"
+                    className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/20 focus:border-neon-cyan/50 focus:outline-none"
+                    autoFocus
+                  />
+                  <div className="text-xs text-white/35">
+                    {newApiKeyName.trim().length}/120 characters
+                  </div>
+                </div>
+
+                {apiKeyError && (
+                  <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                    {apiKeyError}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <Button
+                    variant="secondary"
+                    className="rounded-2xl px-5 py-3"
+                    onClick={() => setIsApiKeyModalOpen(false)}
+                    disabled={isCreatingApiKey}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="neon"
+                    className="rounded-2xl px-5 py-3"
+                    onClick={() => void handleCreateApiKey()}
+                    disabled={isCreatingApiKey}
+                  >
+                    {isCreatingApiKey ? 'Generating...' : 'Generate Key'}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isApiKeyRevealModalOpen && newApiKeyValue && (
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsApiKeyRevealModalOpen(false)}
+              className="absolute inset-0 bg-midnight/85 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 16 }}
+              className="glass-panel relative z-10 w-full max-w-2xl overflow-hidden p-6"
+            >
+              <button
+                type="button"
+                onClick={() => setIsApiKeyRevealModalOpen(false)}
+                className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/60 transition-colors hover:bg-white/20 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.3em] text-emerald-300">API Key Ready</p>
+                  <h3 className="mt-2 text-2xl font-bold">Copy and store this key now</h3>
+                  <p className="mt-3 text-sm leading-relaxed text-white/55">
+                    This exact value is shown only once. It authenticates requests as <span className="font-semibold text-white">{generatedApiKeyName || 'this account'}</span> without asking for email or password.
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                  <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.25em] text-emerald-300">Secret API Key</div>
+                  <code className="block break-all text-sm leading-7 text-emerald-50">{newApiKeyValue}</code>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/60">
+                  Recommended:
+                  Save it in a password manager, `.env` file, CI secret store, or local shell profile. Do not paste it into client-side code.
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <a
+                    href={API_ACCESS_GUIDE_PATH}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-white/65 transition-colors hover:border-neon-cyan/40 hover:text-neon-cyan"
+                  >
+                    <BookOpen size={14} />
+                    Open API Guide
+                    <ExternalLink size={13} />
+                  </a>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button variant="secondary" className="rounded-2xl px-5 py-3" onClick={() => setIsApiKeyRevealModalOpen(false)}>
+                      Close
+                    </Button>
+                    <Button variant="neon" className="rounded-2xl px-5 py-3" onClick={() => void handleCopyApiKey()}>
+                      <ClipboardCopy size={15} />
+                      {apiKeyCopied ? 'Copied' : 'Copy API Key'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -1175,7 +1424,7 @@ const Dashboard = ({
         accept="video/*" 
         onChange={handleFileChange}
       />
-      <header className="mb-10 flex justify-between items-center">
+      <header className="mb-10 flex items-center justify-between">
         <div>
           <h1 className="text-4xl font-bold mb-2">Welcome back</h1>
           <p className="text-white/50">Ready to analyze your next video?</p>
@@ -1190,10 +1439,6 @@ const Dashboard = ({
             <option value="en" className="bg-midnight text-white">English</option>
             <option value="tl" className="bg-midnight text-white">Tagalog</option>
           </select>
-          <Button variant="neon" onClick={triggerUpload} className="px-8 py-4 shadow-lg shadow-neon-cyan/20" disabled={isUploading}>
-            <Upload size={20} />
-            {isUploading ? 'Uploading...' : 'Upload Video'}
-          </Button>
         </div>
       </header>
 
@@ -1515,15 +1760,25 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   const [customSummaryResult, setCustomSummaryResult] = useState<CustomSummaryResponse | null>(null);
   const [customSummaryError, setCustomSummaryError] = useState<string | null>(null);
   const [isCustomSummaryLoading, setIsCustomSummaryLoading] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const [isShowingCustomSummary, setIsShowingCustomSummary] = useState(false);
+  const [hasSummaryCustomizationChoice, setHasSummaryCustomizationChoice] = useState(false);
+  const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
+  const [isSummaryMenuOpen, setIsSummaryMenuOpen] = useState(false);
+  const [showTranscriptTimestamps, setShowTranscriptTimestamps] = useState(true);
+  const [isTranscriptMenuOpen, setIsTranscriptMenuOpen] = useState(false);
+  const summaryMenuRef = useRef<HTMLDivElement | null>(null);
+  const transcriptMenuRef = useRef<HTMLDivElement | null>(null);
+  const chatMessagesContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
-
-  const handleExportPDF = () => {
-    window.print();
-  };
 
   const actionItems = job?.action_items ?? [];
   const summaryText = job?.summary ?? 'No summary generated yet.';
+  const activeSummaryText = isShowingCustomSummary && customSummaryResult?.summary
+    ? customSummaryResult.summary
+    : summaryText;
+  const hasCustomSummary = Boolean(customSummaryResult?.summary);
+  const showSummaryCustomizationPrompt = !hasSummaryCustomizationChoice && !hasCustomSummary;
+  const isSummaryModePromptOpen = activeTab === 'summary' && showSummaryCustomizationPrompt && !isSummaryModalOpen;
   const transcriptSegments = useMemo(() => {
     const rawSegments = job?.transcript_segments ?? [];
     const normalizedSegments = rawSegments
@@ -1572,6 +1827,8 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     && (((job.transcript ?? '').trim()) || transcriptSegments.length > 0),
   );
   const chatUnavailable = !hasChatContext;
+  const hasConversation = chatMessages.length > 0 || Boolean(pendingQuestion);
+  const showSuggestedQuestions = !hasConversation;
 
   const handleRegenerateSummary = useCallback(async () => {
     if (!job?.id) {
@@ -1589,6 +1846,10 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     try {
       const response = await regenerateVideoSummary(job.id, instruction);
       setCustomSummaryResult(response);
+      setIsShowingCustomSummary(true);
+      setHasSummaryCustomizationChoice(true);
+      setIsSummaryMenuOpen(false);
+      setIsSummaryModalOpen(false);
     } catch (error) {
       setCustomSummaryError(error instanceof Error ? error.message : 'Unable to regenerate the custom summary');
     } finally {
@@ -1621,10 +1882,332 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   }, []);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(summaryText);
+    navigator.clipboard.writeText(activeSummaryText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleExportPDF = useCallback((target: 'summary' | 'transcript') => {
+    setIsSummaryMenuOpen(false);
+    setIsTranscriptMenuOpen(false);
+    setIsSummaryModalOpen(false);
+
+    const title = escapeHtml(job?.original_filename ?? 'Analysis Review');
+    const sourceLink = job?.source_type === 'url' && job.source_url
+      ? `<p class="meta-link">Source: <a href="${escapeHtml(job.source_url)}">${escapeHtml(job.source_url)}</a></p>`
+      : '';
+    const generatedAt = escapeHtml(formatExportTimestamp());
+
+    const summaryHeading = isShowingCustomSummary && hasCustomSummary ? 'Customized Summary' : 'Executive Summary';
+    const summaryDescription = isShowingCustomSummary && customSummaryResult?.instruction
+      ? escapeHtml(customSummaryResult.instruction)
+      : 'This is the default general summary generated from the full transcript.';
+    const summaryBody = escapeHtml(activeSummaryText).replaceAll('\n', '<br />');
+    const sentimentBody = escapeHtml(job?.sentiment ?? 'Sentiment analysis is still pending.');
+    const actionItemsBody = actionItems.length > 0
+      ? actionItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')
+      : '<li>No action items were extracted from this transcript.</li>';
+    const transcriptBody = transcriptEntries.length > 0
+      ? transcriptEntries.map((entry, index) => {
+          const timestamp = entry.start !== null || entry.end !== null
+            ? `${formatTimestamp(entry.start)} - ${formatTimestamp(entry.end)}`
+            : `Segment ${index + 1}`;
+          return `
+            <article class="transcript-entry">
+              ${showTranscriptTimestamps ? `<div class="timestamp">${escapeHtml(timestamp)}</div>` : ''}
+              <p>${escapeHtml(entry.text).replaceAll('\n', '<br />')}</p>
+            </article>
+          `;
+        }).join('')
+      : '<p class="empty-state">No transcript content matches your search.</p>';
+
+    const exportMarkup = target === 'summary'
+      ? `
+        <section class="section hero">
+          <div class="eyebrow">${escapeHtml(summaryHeading)}</div>
+          ${isShowingCustomSummary && hasCustomSummary ? '<div class="chip">Focused View</div>' : ''}
+          <p class="supporting">${summaryDescription}</p>
+          <div class="summary-body">${summaryBody}</div>
+          ${isShowingCustomSummary && customSummaryResult?.updated_at
+            ? `<div class="updated">Updated ${escapeHtml(formatRelativeTime(customSummaryResult.updated_at))}</div>`
+            : ''}
+        </section>
+        <section class="section compact">
+          <h2>Sentiment</h2>
+          <p>${sentimentBody}</p>
+        </section>
+        <section class="section compact">
+          <h2>Action Items</h2>
+          <ul class="action-list">${actionItemsBody}</ul>
+        </section>
+      `
+      : `
+        <section class="section hero">
+          <div class="eyebrow">Full Transcript</div>
+          <p class="supporting">Exported transcript view${showTranscriptTimestamps ? ' with timestamps' : ''}.</p>
+        </section>
+        <section class="section transcript-section">
+          ${transcriptBody}
+        </section>
+      `;
+
+    const exportDocument = `
+      <!doctype html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8" />
+          <title>${title} - ${target === 'summary' ? 'Summary' : 'Transcript'}</title>
+          <style>
+            @page {
+              size: A4;
+              margin: 14mm 16mm;
+            }
+
+            * {
+              box-sizing: border-box;
+            }
+
+            html, body {
+              margin: 0;
+              padding: 0;
+              background: #ffffff;
+              color: #111827;
+              font-family: Inter, Arial, sans-serif;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+
+            body {
+              padding: 0;
+            }
+
+            main {
+              width: 100%;
+            }
+
+            .header {
+              margin-bottom: 24px;
+              border-bottom: 1px solid #d4d4d8;
+              padding-bottom: 18px;
+            }
+
+            .breadcrumbs {
+              color: #71717a;
+              font-size: 11px;
+              letter-spacing: 0.18em;
+              margin-bottom: 8px;
+              text-transform: uppercase;
+            }
+
+            h1 {
+              margin: 0;
+              font-size: 28px;
+              line-height: 1.15;
+              color: #111827;
+            }
+
+            .meta-link {
+              margin: 10px 0 0;
+              color: #52525b;
+              font-size: 12px;
+            }
+
+            .meta-link a {
+              color: inherit;
+              text-decoration: none;
+            }
+
+            .generated {
+              margin-top: 10px;
+              color: #71717a;
+              font-size: 12px;
+            }
+
+            .section {
+              width: 100%;
+              margin-bottom: 18px;
+              border: 1px solid #d4d4d8;
+              border-radius: 18px;
+              padding: 18px 20px;
+              break-inside: auto;
+              page-break-inside: auto;
+            }
+
+            .section.hero {
+              border-color: #cbd5e1;
+              background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+            }
+
+            .eyebrow {
+              color: #52525b;
+              font-size: 11px;
+              font-weight: 700;
+              letter-spacing: 0.22em;
+              margin-bottom: 10px;
+              text-transform: uppercase;
+            }
+
+            .chip {
+              display: inline-block;
+              margin-bottom: 12px;
+              padding: 6px 10px;
+              border: 1px solid #67e8f9;
+              border-radius: 999px;
+              color: #0f766e;
+              font-size: 11px;
+              font-weight: 700;
+              letter-spacing: 0.16em;
+              text-transform: uppercase;
+            }
+
+            .supporting,
+            .updated {
+              color: #52525b;
+              font-size: 13px;
+              line-height: 1.6;
+            }
+
+            .summary-body {
+              margin-top: 16px;
+              font-size: 15px;
+              line-height: 1.8;
+              white-space: normal;
+            }
+
+            h2 {
+              margin: 0 0 12px;
+              color: #3f3f46;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 0.2em;
+              text-transform: uppercase;
+            }
+
+            p {
+              margin: 0;
+              font-size: 14px;
+              line-height: 1.75;
+            }
+
+            .action-list {
+              margin: 0;
+              padding-left: 20px;
+            }
+
+            .action-list li {
+              margin: 0 0 10px;
+              line-height: 1.7;
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+
+            .transcript-section {
+              border: 0;
+              padding: 0;
+              margin: 0;
+            }
+
+            .transcript-entry {
+              margin-bottom: 12px;
+              border: 1px solid #d4d4d8;
+              border-radius: 16px;
+              padding: 14px 16px;
+            }
+
+            .timestamp {
+              margin-bottom: 8px;
+              color: #52525b;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 0.08em;
+            }
+
+            .empty-state {
+              color: #52525b;
+            }
+          </style>
+        </head>
+        <body>
+          <main>
+            <header class="header">
+              <div class="breadcrumbs">Videos / ${title}</div>
+              <h1>${title}</h1>
+              ${sourceLink}
+              <div class="generated">Exported ${generatedAt}</div>
+            </header>
+            ${exportMarkup}
+          </main>
+        </body>
+      </html>
+    `;
+
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+
+      const cleanup = () => {
+        window.setTimeout(() => {
+          iframe.remove();
+        }, 500);
+      };
+
+      iframe.onload = () => {
+        const printFrame = iframe.contentWindow;
+        if (!printFrame) {
+          cleanup();
+          setChatError('Unable to render the export preview.');
+          return;
+        }
+
+        const triggerPrint = () => {
+          printFrame.focus();
+          printFrame.print();
+        };
+
+        printFrame.onafterprint = cleanup;
+        window.setTimeout(triggerPrint, 150);
+        window.setTimeout(cleanup, 2000);
+      };
+
+      iframe.srcdoc = exportDocument;
+      document.body.appendChild(iframe);
+    } catch {
+      setChatError('Unable to render the export preview.');
+    }
+  }, [
+    actionItems,
+    activeSummaryText,
+    customSummaryResult?.instruction,
+    customSummaryResult?.updated_at,
+    hasCustomSummary,
+    isShowingCustomSummary,
+    job?.original_filename,
+    job?.sentiment,
+    job?.source_type,
+    job?.source_url,
+    showTranscriptTimestamps,
+    transcriptEntries,
+  ]);
+
+  const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const container = chatMessagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior,
+    });
+  }, []);
 
   const handleSendChat = useCallback(async () => {
     if (!job?.id || isChatSending) {
@@ -1716,16 +2299,21 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     setChatError(null);
     setPendingQuestion(null);
     setCustomSummaryInstruction(job?.custom_summary_prompt ?? '');
-    setCustomSummaryResult(
-      job?.custom_summary_text
-        ? {
-            summary: job.custom_summary_text,
-            instruction: job.custom_summary_prompt ?? '',
-            updated_at: job.custom_summary_updated_at ?? new Date().toISOString(),
-          }
-        : null,
-    );
+    const existingCustomSummary = job?.custom_summary_text
+      ? {
+          summary: job.custom_summary_text,
+          instruction: job.custom_summary_prompt ?? '',
+          updated_at: job.custom_summary_updated_at ?? new Date().toISOString(),
+        }
+      : null;
+    setCustomSummaryResult(existingCustomSummary);
     setCustomSummaryError(null);
+    setIsShowingCustomSummary(Boolean(existingCustomSummary));
+    setHasSummaryCustomizationChoice(Boolean(existingCustomSummary));
+    setShowTranscriptTimestamps(true);
+    setIsSummaryModalOpen(false);
+    setIsSummaryMenuOpen(false);
+    setIsTranscriptMenuOpen(false);
 
     setChatMessages([]);
     setSuggestedQuestions([]);
@@ -1737,8 +2325,16 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   }, [job?.id, job?.status, job?.transcript, loadChatMessages, loadSuggestions, transcriptSegments.length]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [chatMessages]);
+    if (activeTab !== 'chat' || !hasConversation) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      scrollChatToBottom('smooth');
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, chatMessages, hasConversation, pendingQuestion, scrollChatToBottom]);
 
   useEffect(() => {
     if (activeTab !== 'chat') {
@@ -1753,34 +2349,95 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     return () => window.cancelAnimationFrame(frame);
   }, [activeTab, job?.id]);
 
+  useEffect(() => {
+    if (activeTab !== 'chat' || !hasConversation) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      scrollChatToBottom('auto');
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, hasConversation, scrollChatToBottom]);
+
+  useEffect(() => {
+    if (!isSummaryMenuOpen && !isTranscriptMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (summaryMenuRef.current?.contains(target) || transcriptMenuRef.current?.contains(target)) {
+        return;
+      }
+      setIsSummaryMenuOpen(false);
+      setIsTranscriptMenuOpen(false);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsSummaryMenuOpen(false);
+        setIsTranscriptMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isSummaryMenuOpen, isTranscriptMenuOpen]);
+
   return (
-    <div className="flex-1 p-10 overflow-hidden flex flex-col">
-      <header className="mb-8 flex justify-between items-center">
+    <div
+      data-print-root
+      className="flex-1 p-6 pt-5 overflow-hidden flex flex-col print:block print:h-auto print:overflow-visible print:bg-white print:p-0 print:text-black"
+    >
+      <header className="hidden print:block print:mb-4">
         <div>
-          <div className="flex items-center gap-2 text-xs text-white/40 uppercase tracking-widest mb-1">
+          <div className="mb-1 flex items-center gap-2 text-[11px] text-white/40 uppercase tracking-widest print:text-zinc-500">
             <span>Videos</span>
             <ChevronRight size={12} />
-            <span className="text-white/60">{job?.original_filename ?? 'No analysis selected'}</span>
+            <span className="text-white/60 print:text-zinc-700">{job?.original_filename ?? 'No analysis selected'}</span>
           </div>
-          <h1 className="text-3xl font-bold">{job?.original_filename ?? 'Analysis Review'}</h1>
+          <h1 className="text-[1.8rem] font-bold leading-tight print:text-black">{job?.original_filename ?? 'Analysis Review'}</h1>
           {job?.source_type === 'url' && job.source_url && (
             <a
               href={job.source_url}
               target="_blank"
               rel="noreferrer"
-              className="mt-2 inline-flex text-sm text-neon-cyan hover:underline"
+              className="mt-2 inline-flex text-sm text-neon-cyan hover:underline print:text-zinc-700"
             >
               Open original video link
             </a>
           )}
         </div>
-        <div className="flex gap-3 print:hidden">
-          <Button variant="secondary" className="px-5 py-2 text-sm" onClick={handleExportPDF}>Export PDF</Button>
-        </div>
       </header>
 
-      <div className="flex-1 flex gap-8 overflow-hidden print:block print:overflow-visible">
-        <div className="flex-[1.5] flex flex-col gap-6 overflow-hidden print:hidden">
+      <div className="flex-1 flex gap-5 overflow-hidden print:block print:overflow-visible">
+        <div className="flex-[1.5] flex flex-col gap-4 overflow-hidden print:hidden">
+          <div className="px-1 pb-1">
+            <div className="mb-1 flex items-center gap-2 text-[11px] text-white/40 uppercase tracking-widest">
+              <span>Videos</span>
+              <ChevronRight size={12} />
+              <span className="text-white/60">{job?.original_filename ?? 'No analysis selected'}</span>
+            </div>
+            <h1 className="text-[1.8rem] font-bold leading-tight">{job?.original_filename ?? 'Analysis Review'}</h1>
+            {job?.source_type === 'url' && job.source_url && (
+              <a
+                href={job.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex text-sm text-neon-cyan hover:underline"
+              >
+                Open original video link
+              </a>
+            )}
+          </div>
+
           <div className="aspect-video glass-panel overflow-hidden relative group">
             {videoSourceUrl ? (
               <video
@@ -1832,7 +2489,7 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
           </div>
         </div>
 
-        <div className="flex-1 glass-panel flex flex-col overflow-hidden print:border-none print:bg-transparent print:p-0 print:overflow-visible">
+        <div data-print-panel className="flex-1 glass-panel flex flex-col overflow-hidden print:border-none print:bg-transparent print:p-0 print:overflow-visible">
           <div className="flex border-b border-white/10 print:hidden">
             <button
               onClick={() => setActiveTab('summary')}
@@ -1857,150 +2514,245 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className={`flex-1 p-6 ${activeTab === 'chat' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
             <AnimatePresence mode="wait">
               {activeTab === 'summary' ? (
                 <motion.div
+                  data-print-section="summary"
                   key="summary"
                   initial={{ opacity: 0, x: 10 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -10 }}
-                  className="space-y-8"
+                  className="space-y-6 print:space-y-5"
                 >
-                  <div className="flex justify-between items-start gap-4">
-                    <section className="flex-1">
-                      <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Executive Summary</h4>
-                      <p className="text-white/80 leading-relaxed">
-                        {summaryText}
-                      </p>
-                    </section>
-                    <button
-                      onClick={handleCopy}
-                      className="shrink-0 p-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-neon-cyan hover:border-neon-cyan/50 transition-all flex items-center gap-2 text-xs font-bold group"
-                    >
-                      {copied ? (
-                        <>
-                          <Check size={14} className="text-emerald-500" />
-                          <span className="text-emerald-500">COPIED</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={14} className="group-hover:scale-110 transition-transform" />
-                          <span>COPY</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
+                  <section data-print-card className="rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] p-6 print:rounded-none print:border-b print:border-zinc-300 print:bg-transparent print:px-0 print:py-0 print:pb-6">
+                    <div className="mb-5 flex items-start justify-between gap-4">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <h4 className="text-xs font-bold uppercase tracking-[0.3em] text-white/40 print:text-zinc-500">
+                            {isShowingCustomSummary && hasCustomSummary ? 'Customized Summary' : 'Executive Summary'}
+                          </h4>
+                          {isShowingCustomSummary && hasCustomSummary && (
+                            <span className="rounded-full border border-neon-cyan/30 bg-neon-cyan/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-neon-cyan print:border-zinc-400 print:bg-transparent print:text-zinc-700">
+                              Focused View
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-3 max-w-2xl text-sm leading-relaxed text-white/55 print:text-zinc-600">
+                          {isShowingCustomSummary && customSummaryResult?.instruction
+                            ? customSummaryResult.instruction
+                            : 'This is the default general summary generated from the full transcript.'}
+                        </p>
+                      </div>
 
-                  <section>
-                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Sentiment</h4>
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-white/80">
+                      <div className="flex items-center gap-3 print:hidden">
+                        {copied && (
+                          <span className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-400">Copied</span>
+                        )}
+                        <div ref={summaryMenuRef} className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setIsSummaryMenuOpen((current) => !current)}
+                            className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/65 transition-all hover:border-neon-cyan/40 hover:text-neon-cyan"
+                          >
+                            <MoreVertical size={18} />
+                          </button>
+                          <AnimatePresence>
+                            {isSummaryMenuOpen && (
+                              <motion.div
+                                initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                                className="absolute right-0 top-14 z-30 w-60 rounded-2xl border border-white/10 bg-[#07131f] p-2 shadow-2xl shadow-black/40"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsSummaryMenuOpen(false);
+                                    handleCopy();
+                                  }}
+                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                                >
+                                  <Copy size={15} />
+                                  Copy summary
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleExportPDF('summary');
+                                  }}
+                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                                >
+                                  <FileDown size={15} />
+                                  Export PDF
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsSummaryMenuOpen(false);
+                                    setHasSummaryCustomizationChoice(true);
+                                    setIsSummaryModalOpen(true);
+                                    setCustomSummaryError(null);
+                                  }}
+                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                                >
+                                  <RefreshCcw size={15} />
+                                  {hasCustomSummary ? 'Regenerate summary' : 'Customize summary'}
+                                </button>
+                                {hasCustomSummary && !isShowingCustomSummary && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setIsSummaryMenuOpen(false);
+                                      setIsShowingCustomSummary(true);
+                                    }}
+                                    className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                                  >
+                                    <Sparkles size={15} />
+                                    Show custom summary
+                                  </button>
+                                )}
+                                {hasCustomSummary && isShowingCustomSummary && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setIsSummaryMenuOpen(false);
+                                      setIsShowingCustomSummary(false);
+                                    }}
+                                    className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                                  >
+                                    <ArrowRight size={15} />
+                                    Go back to default summary
+                                  </button>
+                                )}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      </div>
+                    </div>
+
+                    <p className="whitespace-pre-wrap text-sm leading-7 text-white/82 print:text-black">
+                      {activeSummaryText}
+                    </p>
+
+                    {isShowingCustomSummary && customSummaryResult?.updated_at && (
+                      <div className="mt-5 text-[11px] uppercase tracking-[0.25em] text-white/35 print:text-zinc-500">
+                        Updated {formatRelativeTime(customSummaryResult.updated_at)}
+                      </div>
+                    )}
+                  </section>
+
+                  <section data-print-card className="print:break-inside-avoid">
+                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4 print:text-zinc-500">Sentiment</h4>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-white/80 print:border-zinc-300 print:bg-transparent print:text-black">
                       {job?.sentiment ?? 'Sentiment analysis is still pending.'}
                     </div>
                   </section>
 
-                  <section>
-                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4">Action Items</h4>
+                  <section data-print-card className="print:break-inside-avoid">
+                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-4 print:text-zinc-500">Action Items</h4>
                     <div className="space-y-3">
                       {actionItems.length > 0 ? actionItems.map((item, i) => (
-                        <div key={i} className="p-3 rounded-lg bg-white/5 border border-white/5 flex items-center gap-3">
-                          <div className="w-5 h-5 rounded border border-white/20 flex items-center justify-center">
+                        <div key={i} className="p-3 rounded-lg bg-white/5 border border-white/5 flex items-center gap-3 print:border-zinc-300 print:bg-transparent print:break-inside-avoid">
+                          <div className="w-5 h-5 rounded border border-white/20 flex items-center justify-center print:border-zinc-300">
                             <CheckCircle2 size={14} className="text-white/20" />
                           </div>
-                          <span className="text-sm">{item}</span>
+                          <span className="text-sm print:text-black">{item}</span>
                         </div>
                       )) : (
-                        <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50">
+                        <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50 print:border-zinc-300 print:bg-transparent print:text-zinc-600">
                           No action items were extracted from this transcript.
                         </div>
                       )}
                     </div>
                   </section>
 
-                  <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                    <div className="mb-4 flex items-center justify-between gap-4">
-                      <div>
-                        <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest">Focused Summary</h4>
-                        <p className="mt-2 text-sm text-white/50">
-                          Regenerate a summary for only one part of the video, such as a topic, section, ingredient list, or decision block.
-                        </p>
-                      </div>
-                      <RefreshCcw size={18} className="text-neon-cyan" />
-                    </div>
-
-                    <div className="space-y-3">
-                      <textarea
-                        value={customSummaryInstruction}
-                        onChange={(event) => setCustomSummaryInstruction(event.target.value)}
-                        rows={3}
-                        placeholder="Example: Summarize only the discussion about the second dish and list the ingredients mentioned."
-                        className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-neon-cyan/50 focus:outline-none"
-                      />
-                      <div className="flex items-center gap-4 flex-wrap">
-                        <Button variant="neon" onClick={() => void handleRegenerateSummary()} disabled={isCustomSummaryLoading}>
-                          {isCustomSummaryLoading ? 'Regenerating...' : 'Regenerate Focused Summary'}
-                        </Button>
-                        {customSummaryError && <span className="text-sm text-red-300">{customSummaryError}</span>}
-                        {customSummaryResult?.updated_at && (
-                          <span className="text-xs uppercase tracking-[0.25em] text-white/35">
-                            Updated {formatRelativeTime(customSummaryResult.updated_at)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4">
-                      <div className="mb-3 text-[11px] uppercase tracking-[0.25em] text-white/35">
-                        {customSummaryResult ? 'Focused Summary Result' : 'No Focused Summary Yet'}
-                      </div>
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/80">
-                        {customSummaryResult?.summary ?? 'Use a custom instruction to generate a summary for a specific portion of this video.'}
-                      </p>
-                    </div>
-                  </section>
                 </motion.div>
               ) : activeTab === 'transcript' ? (
                 <motion.div
+                  data-print-section="transcript"
                   key="transcript"
                   initial={{ opacity: 0, x: 10 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -10 }}
-                  className="space-y-6"
+                  className="space-y-6 print:space-y-4"
                 >
-                  <div className="relative mb-6">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" size={16} />
-                    <input
-                      type="text"
-                      placeholder="Search transcript..."
-                      value={searchTerm}
-                      onChange={(event) => setSearchTerm(event.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-neon-cyan/50 transition-colors"
-                    />
-                  </div>
-
-                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/45">
-                    Transcript view uses Whisper timestamped segments when available. Speaker labels are not shown because speaker diarization is not part of the current pipeline.
+                  <div className="mb-6 flex items-center gap-3 print:hidden">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" size={16} />
+                      <input
+                        type="text"
+                        placeholder="Search transcript..."
+                        value={searchTerm}
+                        onChange={(event) => setSearchTerm(event.target.value)}
+                        className="w-full bg-white/5 border border-white/10 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-neon-cyan/50 transition-colors"
+                      />
+                    </div>
+                    <div ref={transcriptMenuRef} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setIsTranscriptMenuOpen((current) => !current)}
+                        className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/65 transition-all hover:border-neon-cyan/40 hover:text-neon-cyan"
+                      >
+                        <MoreVertical size={18} />
+                      </button>
+                      <AnimatePresence>
+                        {isTranscriptMenuOpen && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                            className="absolute right-0 top-14 z-30 w-60 rounded-2xl border border-white/10 bg-[#07131f] p-2 shadow-2xl shadow-black/40"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsTranscriptMenuOpen(false);
+                                setShowTranscriptTimestamps((current) => !current);
+                              }}
+                              className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                            >
+                              {showTranscriptTimestamps ? <EyeOff size={15} /> : <Eye size={15} />}
+                              {showTranscriptTimestamps ? 'Hide timestamps' : 'Show timestamps'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleExportPDF('transcript');
+                              }}
+                              className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                            >
+                              <FileDown size={15} />
+                              Export PDF
+                            </button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
                   </div>
 
                   <div className="space-y-6">
                     {transcriptEntries.length > 0 ? transcriptEntries.map((entry, i) => (
-                      <div key={`${entry.id}-${i}`} className="group cursor-pointer rounded-xl border border-white/5 bg-white/[0.02] p-4">
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <span className="text-xs font-mono text-neon-cyan">
-                            {entry.start !== null || entry.end !== null
-                              ? `${formatTimestamp(entry.start)} - ${formatTimestamp(entry.end)}`
-                              : `Segment ${i + 1}`}
-                          </span>
-                          <span className="text-xs font-bold text-white/40 uppercase tracking-wider">
-                            {entry.start !== null || entry.end !== null ? 'Timestamp' : 'Transcript'}
-                          </span>
-                        </div>
-                        <p className="text-sm text-white/70 leading-relaxed group-hover:text-white transition-colors">
+                      <div key={`${entry.id}-${i}`} data-print-card className="group cursor-pointer rounded-xl border border-white/5 bg-white/[0.02] p-4 print:break-inside-avoid print:border-zinc-300 print:bg-transparent">
+                        {showTranscriptTimestamps && (
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <span className="text-xs font-mono text-neon-cyan print:text-zinc-600">
+                              {entry.start !== null || entry.end !== null
+                                ? `${formatTimestamp(entry.start)} - ${formatTimestamp(entry.end)}`
+                                : `Segment ${i + 1}`}
+                            </span>
+                            <span className="text-xs font-bold text-white/40 uppercase tracking-wider print:text-zinc-500">
+                              {entry.start !== null || entry.end !== null ? 'Timestamp' : 'Transcript'}
+                            </span>
+                          </div>
+                        )}
+                        <p className="text-sm text-white/70 leading-relaxed group-hover:text-white transition-colors print:text-black">
                           {entry.text}
                         </p>
                       </div>
                     )) : (
-                      <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50">
+                      <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/50 print:border-zinc-300 print:bg-transparent print:text-zinc-600">
                         No transcript content matches your search.
                       </div>
                     )}
@@ -2014,188 +2766,181 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                   exit={{ opacity: 0, x: -10 }}
                   className="flex h-full min-h-0 flex-col gap-4"
                 >
-                  <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/6 to-white/[0.02] p-4">
-                    <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-neon-cyan">
-                      <Bot size={14} />
-                      Video Agent
-                    </div>
-                    <p className="text-sm leading-relaxed text-white/65">
-                      Ask only about this uploaded video. Answers are grounded in this job&apos;s transcript, timestamps, summary, and extracted action items.
-                    </p>
-                  </div>
-
-                  <section className="space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-white/40">
-                        <Sparkles size={14} className="text-neon-cyan" />
-                        Suggested Questions
-                      </div>
-                      <span className="text-[11px] uppercase tracking-[0.25em] text-white/30">
-                        Click to reuse
-                      </span>
-                    </div>
-                    <div className="grid gap-3">
-                      {isSuggestionsLoading ? (
-                        <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
-                          <LoaderCircle size={16} className="animate-spin text-neon-cyan" />
-                          Generating related questions...
-                        </div>
-                      ) : suggestedQuestions.length > 0 ? (
-                        suggestedQuestions.map((question) => (
-                          <button
-                            key={question}
-                            type="button"
-                            onClick={() => {
-                              setChatDraft(question);
-                              window.requestAnimationFrame(() => {
-                                chatInputRef.current?.focus();
-                                const nextPosition = question.length;
-                                chatInputRef.current?.setSelectionRange(nextPosition, nextPosition);
-                              });
-                            }}
-                            className="relative z-10 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-left text-sm leading-relaxed text-white/75 transition-all hover:border-neon-cyan/40 hover:bg-white/[0.07] hover:text-white"
-                            style={{ pointerEvents: 'auto' }}
-                          >
-                            {question}
-                          </button>
-                        ))
-                      ) : (
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
-                          No suggestions available yet.
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                  <div className="min-h-0 flex-1 rounded-2xl border border-white/10 bg-black/20 p-4">
-                    <div className="mb-4 flex items-center justify-between gap-3 border-b border-white/10 pb-3">
-                      <div>
-                        <h4 className="text-sm font-bold uppercase tracking-[0.25em] text-white/50">Conversation</h4>
-                        <p className="mt-1 text-xs text-white/35">
-                          {chatMessages.length > 0 ? `${chatMessages.length} saved messages for this video` : 'No saved messages yet'}
-                        </p>
-                      </div>
-                      {isChatSending && (
-                        <div className="flex items-center gap-2 text-xs text-neon-cyan">
-                          <LoaderCircle size={14} className="animate-spin" />
-                          Generating answer
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex h-full min-h-0 flex-col gap-4 overflow-visible">
-                      <div className="min-h-[16rem] flex-1 space-y-4 overflow-y-auto pr-2">
-                        {chatMessages.length > 0 ? chatMessages.map((message, index) => (
-                          <div
-                            key={message.id ?? `${message.role}-${index}`}
-                            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                          >
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[30px] border border-white/10 bg-[radial-gradient(circle_at_top,#102131_0%,#09131d_45%,#050b12_100%)] shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+                    <div ref={chatMessagesContainerRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5 md:px-6">
+                      {hasConversation ? (
+                        <div className="space-y-4">
+                          {chatMessages.map((message, index) => (
                             <div
-                              className={`max-w-[88%] rounded-2xl px-4 py-3 shadow-sm ${
-                                message.role === 'user'
-                                  ? 'bg-neon-cyan text-midnight'
-                                  : 'border border-white/10 bg-white/[0.06] text-white/85'
-                              }`}
+                              key={message.id ?? `${message.role}-${index}`}
+                              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                             >
-                              <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
-                                {message.role === 'user' ? (
-                                  <>
+                              <div
+                                className={`max-w-[90%] rounded-[26px] px-4 py-3 shadow-sm ${
+                                  message.role === 'user'
+                                    ? 'bg-neon-cyan text-midnight'
+                                    : 'border border-white/10 bg-white/[0.06] text-white/85'
+                                }`}
+                              >
+                                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+                                  {message.role === 'user' ? (
+                                    <>
+                                      <MessageSquare size={12} />
+                                      You
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Bot size={12} />
+                                      Video Agent
+                                    </>
+                                  )}
+                                </div>
+                                <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
+                              </div>
+                            </div>
+                          ))}
+
+                          {pendingQuestion && (
+                            <>
+                              <div className="flex justify-end">
+                                <div className="max-w-[90%] rounded-[26px] bg-neon-cyan px-4 py-3 text-midnight shadow-sm">
+                                  <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
                                     <MessageSquare size={12} />
                                     You
-                                  </>
-                                ) : (
-                                  <>
+                                  </div>
+                                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{pendingQuestion}</p>
+                                </div>
+                              </div>
+                              <div className="flex justify-start">
+                                <div className="max-w-[90%] rounded-[26px] border border-white/10 bg-white/[0.06] px-4 py-3 text-white/85 shadow-sm">
+                                  <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
                                     <Bot size={12} />
                                     Video Agent
-                                  </>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-sm text-white/60">
+                                    <LoaderCircle size={14} className="animate-spin text-neon-cyan" />
+                                    Thinking about this video...
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex min-h-full flex-col items-center justify-center gap-6 py-6 text-center">
+                          <div className="max-w-2xl space-y-3">
+                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-neon-cyan/20 bg-neon-cyan/10">
+                              <Bot size={24} className="text-neon-cyan" />
+                            </div>
+                            <div className="space-y-2">
+                              <h4 className="text-lg font-semibold text-white">Ask anything about this video</h4>
+                              <p className="text-sm leading-relaxed text-white/55">
+                                Answers are grounded in this video&apos;s transcript, timestamps, summary, and extracted action items.
+                              </p>
+                            </div>
+                          </div>
+
+                          {showSuggestedQuestions && (
+                            <div className="w-full max-w-3xl space-y-3">
+                              <div className="flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-white/35">
+                                <Sparkles size={14} className="text-neon-cyan" />
+                                Suggested Questions
+                              </div>
+                              <div className="grid gap-3 md:grid-cols-2">
+                                {isSuggestionsLoading ? (
+                                  <div className="md:col-span-2 flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
+                                    <LoaderCircle size={16} className="animate-spin text-neon-cyan" />
+                                    Generating related questions...
+                                  </div>
+                                ) : suggestedQuestions.length > 0 ? (
+                                  suggestedQuestions.map((question) => (
+                                    <button
+                                      key={question}
+                                      type="button"
+                                      onClick={() => {
+                                        setChatDraft(question);
+                                        window.requestAnimationFrame(() => {
+                                          chatInputRef.current?.focus();
+                                          const nextPosition = question.length;
+                                          chatInputRef.current?.setSelectionRange(nextPosition, nextPosition);
+                                        });
+                                      }}
+                                      className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-left text-sm leading-relaxed text-white/75 transition-all hover:border-neon-cyan/40 hover:bg-white/[0.07] hover:text-white"
+                                    >
+                                      {question}
+                                    </button>
+                                  ))
+                                ) : (
+                                  <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
+                                    No suggestions available yet.
+                                  </div>
                                 )}
                               </div>
-                              <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
                             </div>
-                          </div>
-                        )) : pendingQuestion ? null : (
-                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] p-6 text-sm text-white/45">
-                            Start with a specific question like "What decisions were made?", "What happened around 01:10?", or "Which student issue came up most often?"
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-3 border-t border-white/10 bg-black/25 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/35">
+                          {hasConversation ? `${chatMessages.length} saved messages` : 'Start a conversation'}
+                        </div>
+                        {isChatSending && (
+                          <div className="flex items-center gap-2 text-xs text-neon-cyan">
+                            <LoaderCircle size={14} className="animate-spin" />
+                            Generating answer
                           </div>
                         )}
-
-                        {pendingQuestion && (
-                          <>
-                            <div className="flex justify-end">
-                              <div className="max-w-[88%] rounded-2xl bg-neon-cyan px-4 py-3 text-midnight shadow-sm">
-                                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
-                                  <MessageSquare size={12} />
-                                  You
-                                </div>
-                                <p className="whitespace-pre-wrap text-sm leading-relaxed">{pendingQuestion}</p>
-                              </div>
-                            </div>
-                            <div className="flex justify-start">
-                              <div className="max-w-[88%] rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3 text-white/85 shadow-sm">
-                                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
-                                  <Bot size={12} />
-                                  Video Agent
-                                </div>
-                                <div className="flex items-center gap-2 text-sm text-white/60">
-                                  <LoaderCircle size={14} className="animate-spin text-neon-cyan" />
-                                  Thinking about this video...
-                                </div>
-                              </div>
-                            </div>
-                          </>
-                        )}
-
-                        <div ref={chatEndRef} />
                       </div>
 
-                      <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                        {chatError && (
-                          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                            {chatError}
-                          </div>
-                        )}
-                        {chatUnavailable && (
-                          <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
-                            Chat answers require transcript context from this video. You can still draft a question here.
-                          </div>
-                        )}
-                        <div className="relative z-20 flex items-end gap-3" style={{ pointerEvents: 'auto' }}>
-                          <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 focus-within:border-neon-cyan/50">
-                            <textarea
-                              ref={chatInputRef}
-                              value={chatDraft}
-                              onChange={(event) => setChatDraft(event.target.value)}
-                              onInput={(event) => setChatDraft((event.target as HTMLTextAreaElement).value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter' && !event.shiftKey) {
-                                  event.preventDefault();
-                                  void handleSendChat();
-                                }
-                              }}
-                              rows={3}
-                              disabled={isChatSending}
-                              placeholder="Ask about this specific video..."
-                              className="min-h-[96px] w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-sm leading-relaxed text-white placeholder:text-white/30 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                              style={{ pointerEvents: 'auto' }}
-                              autoCapitalize="sentences"
-                              autoCorrect="on"
-                              spellCheck
-                            />
-                          </div>
-                          <Button
-                            variant="neon"
-                            className="h-[96px] shrink-0 rounded-2xl px-6"
-                            onClick={() => {
-                              void handleSendChat();
-                            }}
-                            disabled={isChatSending || !chatDraft.trim()}
-                          >
-                            <span className="flex items-center gap-2">
-                              {isChatSending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}
-                              {isChatSending ? 'Asking...' : 'Send'}
-                            </span>
-                          </Button>
+                      {chatError && (
+                        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                          {chatError}
                         </div>
+                      )}
+                      {chatUnavailable && (
+                        <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/50">
+                          Chat answers require transcript context from this video. You can still draft a question here.
+                        </div>
+                      )}
+
+                      <div className="flex items-end gap-3">
+                        <div className="flex-1 rounded-2xl border border-white/10 bg-white/5 transition-colors focus-within:border-neon-cyan/50">
+                          <textarea
+                            ref={chatInputRef}
+                            value={chatDraft}
+                            onChange={(event) => setChatDraft(event.target.value)}
+                            onInput={(event) => setChatDraft((event.target as HTMLTextAreaElement).value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' && !event.shiftKey) {
+                                event.preventDefault();
+                                void handleSendChat();
+                              }
+                            }}
+                            rows={2}
+                            disabled={isChatSending}
+                            placeholder="Ask about this specific video..."
+                            className="min-h-[72px] w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-sm leading-relaxed text-white placeholder:text-white/30 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                            autoCapitalize="sentences"
+                            autoCorrect="on"
+                            spellCheck
+                          />
+                        </div>
+                        <Button
+                          variant="neon"
+                          className="h-14 shrink-0 rounded-2xl px-5 text-sm"
+                          onClick={() => {
+                            void handleSendChat();
+                          }}
+                          disabled={isChatSending || !chatDraft.trim()}
+                        >
+                          <span className="flex items-center gap-2">
+                            {isChatSending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}
+                            {isChatSending ? 'Asking...' : 'Send'}
+                          </span>
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -2205,15 +2950,582 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {(isSummaryModePromptOpen || isSummaryModalOpen) && (
+          <div data-print-overlay className="fixed inset-0 z-[120] flex items-center justify-center p-6">
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (isSummaryModalOpen) {
+                  setIsSummaryModalOpen(false);
+                }
+              }}
+              className="absolute inset-0 bg-midnight/85 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 16 }}
+              className="glass-panel relative z-10 w-full max-w-2xl overflow-hidden p-6"
+            >
+              {isSummaryModePromptOpen ? (
+                <div className="space-y-6">
+                  <div className="space-y-3">
+                    <p className="text-xs font-bold uppercase tracking-[0.3em] text-neon-cyan">Summary Mode</p>
+                    <h3 className="text-3xl font-bold">Do you want to customize the summary?</h3>
+                    <p className="max-w-xl text-sm leading-relaxed text-white/60">
+                      Choose No to keep the default general summary, or Yes to open a focused prompt for a summary tailored to your specific need.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHasSummaryCustomizationChoice(true);
+                        setIsShowingCustomSummary(false);
+                      }}
+                      className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 text-left transition-all hover:border-white/20 hover:bg-white/[0.06]"
+                    >
+                      <div className="text-sm font-semibold text-white">No, use the default</div>
+                      <p className="mt-2 text-sm leading-relaxed text-white/50">
+                        Keep the original full-video summary with the current sentiment and action items.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHasSummaryCustomizationChoice(true);
+                        setIsSummaryModalOpen(true);
+                        setCustomSummaryError(null);
+                      }}
+                      className="rounded-3xl border border-neon-cyan/30 bg-neon-cyan/10 p-5 text-left transition-all hover:border-neon-cyan/50 hover:bg-neon-cyan/15"
+                    >
+                      <div className="text-sm font-semibold text-white">Yes, customize it</div>
+                      <p className="mt-2 text-sm leading-relaxed text-white/55">
+                        Open a focused summary prompt and generate a version for one topic, section, or need.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setIsSummaryModalOpen(false)}
+                    className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/60 transition-colors hover:bg-white/20 hover:text-white"
+                  >
+                    <X size={18} />
+                  </button>
+
+                  <div className="space-y-5">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.3em] text-neon-cyan">Customize Summary</p>
+                      <h3 className="mt-2 text-2xl font-bold">Tell the AI what summary you actually need</h3>
+                      <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/55">
+                        Example: summarize only the second topic, list the key decisions, focus on student concerns, or extract action items from one section.
+                      </p>
+                    </div>
+
+                    <textarea
+                      value={customSummaryInstruction}
+                      onChange={(event) => setCustomSummaryInstruction(event.target.value)}
+                      rows={5}
+                      placeholder="Example: Summarize only the discussion about the student issues and list the decisions made."
+                      className="w-full resize-none rounded-3xl border border-white/10 bg-white/5 px-5 py-4 text-sm text-white placeholder:text-white/30 focus:border-neon-cyan/50 focus:outline-none"
+                    />
+
+                    {customSummaryError && (
+                      <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                        {customSummaryError}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-end gap-3">
+                      <Button
+                        variant="secondary"
+                        className="rounded-2xl px-5 py-3"
+                        onClick={() => setIsSummaryModalOpen(false)}
+                        disabled={isCustomSummaryLoading}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="neon"
+                        className="rounded-2xl px-5 py-3"
+                        onClick={() => void handleRegenerateSummary()}
+                        disabled={isCustomSummaryLoading}
+                      >
+                        {isCustomSummaryLoading ? 'Generating...' : 'Generate Summary'}
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
+};
+
+const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
+  const [tutorialPlatform, setTutorialPlatform] = useState<'windows' | 'linux'>('windows');
+  const apiBaseUrl = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return 'http://localhost:8000/api';
+    }
+    return `${window.location.origin}/api`;
+  }, []);
+
+  const powerShellExample = [
+    '$headers = @{',
+    '  "X-API-Key" = "pat_your_generated_api_key"',
+    '}',
+    '',
+    `Invoke-RestMethod -Method Get -Uri "${apiBaseUrl}/videos" -Headers $headers`,
+  ].join('\n');
+
+  const curlExample = [
+    `curl -X GET "${apiBaseUrl}/videos" \\`,
+    '  -H "X-API-Key: pat_your_generated_api_key"',
+  ].join('\n');
+
+  const uploadExample = [
+    `curl -X POST "${apiBaseUrl}/videos/import" \\`,
+    '  -H "Content-Type: application/json" \\',
+    '  -H "X-API-Key: pat_your_generated_api_key" \\',
+    '  -d \'{',
+    '    "video_url": "https://example.com/meeting.mp4",',
+    '    "language_hint": "auto"',
+    "  }'",
+  ].join('\n');
+
+  const pythonExample = [
+    'import requests',
+    '',
+    `base_url = "${apiBaseUrl}"`,
+    'headers = {"X-API-Key": "pat_your_generated_api_key"}',
+    '',
+    'response = requests.get(f"{base_url}/videos", headers=headers, timeout=30)',
+    'response.raise_for_status()',
+    'print(response.json())',
+  ].join('\n');
+
+  const nodeExample = [
+    `const baseUrl = "${apiBaseUrl}";`,
+    '',
+    'const response = await fetch(`${baseUrl}/videos`, {',
+    "  headers: { 'X-API-Key': 'pat_your_generated_api_key' },",
+    '});',
+    '',
+    'if (!response.ok) throw new Error(await response.text());',
+    'console.log(await response.json());',
+  ].join('\n');
+
+  const isWindows = tutorialPlatform === 'windows';
+  const codeBlockClass = 'overflow-x-auto whitespace-pre-wrap break-words rounded-3xl border border-white/10 bg-[#07131d] p-5 text-sm leading-7 text-white/75';
+  const endpointCards = [
+    { id: 'auth', method: 'HEADER', path: 'X-API-Key', description: 'Send this header on every request.' },
+    { id: 'list', method: 'GET', path: '/api/videos', description: 'List all jobs in the workspace.' },
+    { id: 'view', method: 'GET', path: '/api/videos/{job_id}', description: 'View one job with transcript and summary.' },
+    { id: 'source', method: 'GET', path: '/api/videos/{job_id}/source', description: 'Download or stream the original source video.' },
+    { id: 'upload', method: 'POST', path: '/api/videos/upload', description: 'Upload a local file using multipart form-data.' },
+    { id: 'import', method: 'POST', path: '/api/videos/import', description: 'Import from YouTube, Google Drive, or public video URLs.' },
+    { id: 'chat', method: 'POST', path: '/api/videos/{job_id}/chat', description: 'Ask questions about the processed video.' },
+    { id: 'messages', method: 'GET', path: '/api/videos/{job_id}/chat/messages', description: 'Read saved chat history.' },
+    { id: 'suggestions', method: 'POST', path: '/api/videos/{job_id}/chat/suggestions', description: 'Generate suggested follow-up questions.' },
+    { id: 'summary', method: 'POST', path: '/api/videos/{job_id}/summary/regenerate', description: 'Generate a focused summary from custom instructions.' },
+    { id: 'retry', method: 'POST', path: '/api/videos/{job_id}/retry', description: 'Retry a failed or incomplete job.' },
+  ] as const;
+
+  const authExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}'].join('\n')
+    : ['export PATHOMAI_API_KEY="pat_your_generated_api_key"', '', 'HEADER="X-API-Key: $PATHOMAI_API_KEY"'].join('\n');
+
+  const listExample = isWindows ? powerShellExample : curlExample;
+  const viewExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '', `Invoke-RestMethod -Method Get -Uri "${apiBaseUrl}/videos/$jobId" -Headers $headers`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -X GET "${apiBaseUrl}/videos/$JOB_ID" \\`, '  -H "X-API-Key: pat_your_generated_api_key"'].join('\n');
+  const sourceExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '', `Invoke-WebRequest -Method Get -Uri "${apiBaseUrl}/videos/$jobId/source" -Headers $headers -OutFile ".\\meeting.mp4"`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -L "${apiBaseUrl}/videos/$JOB_ID/source" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -o ./meeting.mp4'].join('\n');
+  const uploadLocalExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$form = @{', '  file = Get-Item ".\\Weekly Meeting Example.mp4"', '  language_hint = "auto"', '}', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/upload" -Headers $headers -Form $form`].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/upload" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -F "file=@./Weekly Meeting Example.mp4" \\', '  -F "language_hint=auto"'].join('\n');
+  const importYoutubeExample = isWindows
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$body = @{', '  video_url = "https://www.youtube.com/watch?v=abc123xyz"', '  language_hint = "auto"', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/import" -Headers $headers -Body $body`].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/import" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "video_url": "https://www.youtube.com/watch?v=abc123xyz",', '    "language_hint": "auto"', "  }'"].join('\n');
+  const importDriveExample = isWindows
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$body = @{', '  video_url = "https://drive.google.com/file/d/FILE_ID/view?usp=sharing"', '  language_hint = "auto"', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/import" -Headers $headers -Body $body`].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/import" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "video_url": "https://drive.google.com/file/d/FILE_ID/view?usp=sharing",', '    "language_hint": "auto"', "  }'"].join('\n');
+  const chatGuideExample = isWindows
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$body = @{', '  question = "What decisions were made?"', '  chat_history = @(', '    @{ role = "user"; content = "What happened around 01:10?" }', '  )', '} | ConvertTo-Json -Depth 5', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/chat" -Headers $headers -Body $body`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/chat" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "question": "What decisions were made?",', '    "chat_history": [', '      { "role": "user", "content": "What happened around 01:10?" }', '    ]', "  }'"].join('\n');
+  const summaryGuideExample = isWindows
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$body = @{', '  instruction = "Focus only on student attendance risks and next steps."', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/summary/regenerate" -Headers $headers -Body $body`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/summary/regenerate" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "instruction": "Focus only on student attendance risks and next steps."', "  }'"].join('\n');
+
+  return (
+    <div className="min-h-screen bg-midnight text-white">
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-8 md:px-8">
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.28em] text-neon-cyan">Developer Docs</p>
+            <h1 className="mt-3 text-3xl font-bold md:text-5xl">API Access Guide</h1>
+            <p className="mt-3 max-w-3xl text-sm leading-7 text-white/60 md:text-base">
+              Use your generated personal API key in the <code className="rounded bg-white/10 px-2 py-1 text-white">X-API-Key</code> header.
+              No username or password is required for API requests.
+            </p>
+          </div>
+          <a
+            href={user ? '/settings' : '/login'}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white/75 transition-colors hover:border-neon-cyan/40 hover:text-white"
+          >
+            Back
+            <ArrowRight size={16} />
+          </a>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
+          <section className="space-y-6">
+            <div className="glass-panel space-y-6 p-8">
+              <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5">
+                <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-white/40">Base URL</div>
+                <div className="mt-2 font-mono text-sm text-neon-cyan">{apiBaseUrl}</div>
+              </div>
+
+              <div id="auth" className="space-y-3 scroll-mt-24">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-bold">Authentication</h2>
+                    <p className="mt-2 text-sm leading-7 text-white/60">
+                      Every key is account-scoped and workspace-scoped. Send the <code className="rounded bg-white/10 px-2 py-1 text-white">X-API-Key</code> header on every request.
+                      No email or password is required once the key is generated.
+                    </p>
+                  </div>
+                  <div className="inline-flex rounded-full border border-white/10 bg-white/[0.04] p-1">
+                    <button
+                      type="button"
+                      onClick={() => setTutorialPlatform('windows')}
+                      className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] transition-colors ${tutorialPlatform === 'windows' ? 'bg-neon-cyan text-midnight' : 'text-white/50 hover:text-white'}`}
+                    >
+                      Windows
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTutorialPlatform('linux')}
+                      className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] transition-colors ${tutorialPlatform === 'linux' ? 'bg-neon-cyan text-midnight' : 'text-white/50 hover:text-white'}`}
+                    >
+                      Linux
+                    </button>
+                  </div>
+                </div>
+                <pre className={codeBlockClass}>{authExample}</pre>
+              </div>
+            </div>
+
+            <div id="list" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">GET</span>
+                <code className="text-sm text-white/80">/api/videos</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">List videos</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Returns every job in the current workspace so you can select a job ID for later view, source, chat, or summary actions.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{listExample}</pre>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`[
+  {
+    "id": "job_123",
+    "original_filename": "weekly-meeting.mp4",
+    "status": "completed",
+    "summary": "John Smith was discussed because of repeated absences...",
+    "sentiment": "positive",
+    "action_items": [
+      "Coordinate with the guidance counselor",
+      "Share low-cost child-care resources"
+    ]
+  }
+]`}</pre>
+            </div>
+
+            <div id="view" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">GET</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">View one processed video</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Returns the full job record including summary, transcript, transcript segments, sentiment, action items, and custom summary data.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{viewExample}</pre>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "id": "job_123",
+  "status": "completed",
+  "summary": "The team discussed John Smith's attendance and family support needs.",
+  "transcript": "John Smith has missed seven days by November...",
+  "sentiment": "positive",
+  "action_items": [
+    "Coordinate with the guidance counselor",
+    "Locate community child-care resources"
+  ]
+}`}</pre>
+            </div>
+
+            <div id="source" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">GET</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/source</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">View or download the original source</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">This returns the actual video file stream. Use it to download the original upload or play it in another client.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{sourceExample}</pre>
+            </div>
+
+            <div id="upload" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/upload</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Upload a local file</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Use multipart form-data with a local file and optional <code className="rounded bg-white/10 px-2 py-1 text-white">language_hint</code> of <code className="rounded bg-white/10 px-2 py-1 text-white">auto</code>, <code className="rounded bg-white/10 px-2 py-1 text-white">en</code>, or <code className="rounded bg-white/10 px-2 py-1 text-white">tl</code>.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{uploadLocalExample}</pre>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "id": "job_123",
+  "status": "queued",
+  "message": "Video upload accepted and queued for processing"
+}`}</pre>
+            </div>
+
+            <div id="import" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/import</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Import from YouTube, Google Drive, or a public video URL</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">The backend downloads the source first, then runs the normal analysis pipeline. Use a public YouTube URL, a valid public Google Drive share link, or a direct public video file URL.</p>
+              <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <div>
+                  <div className="mb-3 text-sm font-semibold text-white">YouTube or public URL</div>
+                  <pre className={codeBlockClass}>{importYoutubeExample}</pre>
+                </div>
+                <div>
+                  <div className="mb-3 text-sm font-semibold text-white">Google Drive share link</div>
+                  <pre className={codeBlockClass}>{importDriveExample}</pre>
+                </div>
+              </div>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "id": "job_456",
+  "status": "queued",
+  "message": "Video import accepted and queued for processing"
+}`}</pre>
+            </div>
+
+            <div id="chat" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/chat</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Ask questions about a video</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Pass the current question and optionally include prior messages in <code className="rounded bg-white/10 px-2 py-1 text-white">chat_history</code> to keep context.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{chatGuideExample}</pre>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "answer": "John Smith was discussed because he had already missed seven days by November.",
+  "suggested_questions": [
+    "What support was suggested for John Smith?",
+    "Who volunteered to follow up with the family?"
+  ]
+}`}</pre>
+            </div>
+
+            <div id="summary" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/summary/regenerate</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Generate a focused summary</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Use this when the default summary is too broad and you want a custom instruction. This updates the custom summary fields only.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{summaryGuideExample}</pre>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "summary": "John Smith is at attendance risk and needs family support follow-up.",
+  "instruction": "Focus only on student attendance risks and next steps.",
+  "updated_at": "2026-03-13T09:31:44Z"
+}`}</pre>
+            </div>
+
+            <div id="messages" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">GET</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/chat/messages</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Read saved chat messages</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Use this to rebuild the conversation thread in your own client or external dashboard.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`[
+  {
+    "id": "msg_001",
+    "role": "user",
+    "content": "What decisions were made?",
+    "created_at": "2026-03-13T09:24:08Z"
+  },
+  {
+    "id": "msg_002",
+    "role": "assistant",
+    "content": "The team agreed to connect John Smith with support resources.",
+    "created_at": "2026-03-13T09:24:11Z"
+  }
+]`}</pre>
+            </div>
+
+            <div id="suggestions" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/chat/suggestions</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Generate suggested follow-up questions</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Useful when you want the app to suggest the next questions the user could ask.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "suggested_questions": [
+    "What action items were assigned?",
+    "What student support concerns came up most often?",
+    "Was there a timeline for the follow-up?"
+  ]
+}`}</pre>
+            </div>
+
+            <div id="retry" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/retry</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Retry a job</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Retries processing for a failed or incomplete job and places it back into the queue.</p>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "id": "job_123",
+  "status": "queued",
+  "message": "Video queued for retry"
+}`}</pre>
+            </div>
+          </section>
+
+          <section className="space-y-6">
+            <div className="glass-panel p-8">
+              <h2 className="text-xl font-bold">Available Endpoints</h2>
+              <div className="mt-5 space-y-3 text-sm text-white/65">
+                {endpointCards.map((endpoint) => (
+                  <a
+                    key={endpoint.id}
+                    href={`#${endpoint.id}`}
+                    className="block rounded-2xl border border-white/10 bg-white/[0.04] p-4 transition-colors hover:border-neon-cyan/40 hover:bg-white/[0.07]"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-neon-cyan">
+                        {endpoint.method}
+                      </span>
+                      <code className="text-sm text-white/85">{endpoint.path}</code>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-white/50">{endpoint.description}</p>
+                  </a>
+                ))}
+              </div>
+            </div>
+
+            <div className="glass-panel p-8">
+              <h2 className="text-xl font-bold">Sample Format</h2>
+              <pre className={`mt-5 ${codeBlockClass}`}>{`POST /api/videos/import
+Content-Type: application/json
+X-API-Key: pat_your_generated_api_key
+
+{
+  "video_url": "https://www.youtube.com/watch?v=abc123xyz",
+  "language_hint": "auto"
+}`}</pre>
+              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "id": "job_123",
+  "status": "queued",
+  "message": "Video import accepted and queued for processing"
+}`}</pre>
+            </div>
+
+            <div className="glass-panel p-8">
+              <h2 className="text-xl font-bold">Validation and Errors</h2>
+              <div className="mt-5 space-y-3 text-sm leading-7 text-white/60">
+                <p><span className="font-semibold text-white">401</span> means the API key is missing, invalid, or revoked.</p>
+                <p><span className="font-semibold text-white">404</span> means the job does not exist in your workspace.</p>
+                <p><span className="font-semibold text-white">422</span> means the request body failed validation.</p>
+                <p><span className="font-semibold text-white">Upload</span> is for local files. <span className="font-semibold text-white">Import</span> is for YouTube, Google Drive, and other public URLs.</p>
+                <p><span className="font-semibold text-white">Source</span> returns the original video stream, not JSON.</p>
+                <p><span className="font-semibold text-white">Google Drive</span> links must be public file-share links, not folder links.</p>
+                <p><span className="font-semibold text-white">Key names</span> must be between 2 and 120 characters when generated from Settings.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const API_ACCESS_GUIDE_PATH = '/developer-api-guide';
+const PROTECTED_SCREENS = new Set<Screen>(['dashboard', 'analysis', 'review', 'history', 'settings']);
+
+const getRouteStateFromPath = (pathname: string): { screen: Screen; authMode: 'signin' | 'signup' } => {
+  const normalizedPath = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+
+  switch (normalizedPath) {
+    case '/developer-api-guide':
+      return { screen: 'apiGuide', authMode: 'signin' };
+    case '/login':
+      return { screen: 'auth', authMode: 'signin' };
+    case '/signup':
+      return { screen: 'auth', authMode: 'signup' };
+    case '/home':
+      return { screen: 'dashboard', authMode: 'signin' };
+    case '/history':
+      return { screen: 'history', authMode: 'signin' };
+    case '/settings':
+      return { screen: 'settings', authMode: 'signin' };
+    case '/analysis':
+      return { screen: 'analysis', authMode: 'signin' };
+    case '/review':
+      return { screen: 'review', authMode: 'signin' };
+    default:
+      return { screen: 'landing', authMode: 'signin' };
+  }
+};
+
+const getPathForScreen = (screen: Screen, authMode: 'signin' | 'signup') => {
+  switch (screen) {
+    case 'apiGuide':
+      return '/developer-api-guide';
+    case 'auth':
+      return authMode === 'signup' ? '/signup' : '/login';
+    case 'dashboard':
+      return '/home';
+    case 'history':
+      return '/history';
+    case 'settings':
+      return '/settings';
+    case 'analysis':
+      return '/analysis';
+    case 'review':
+      return '/review';
+    case 'landing':
+    default:
+      return '/';
+  }
 };
 
 // --- Main App ---
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<Screen>('landing');
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const initialRoute = useMemo(
+    () => getRouteStateFromPath(typeof window === 'undefined' ? '/' : window.location.pathname),
+    [],
+  );
+  const [currentScreen, setCurrentScreen] = useState<Screen>(initialRoute.screen);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>(initialRoute.authMode);
   const [isDemoOpen, setIsDemoOpen] = useState(false);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isAuthInitializing, setIsAuthInitializing] = useState(true);
@@ -2264,6 +3576,10 @@ export default function App() {
   useEffect(() => {
     const bootstrapAuth = async () => {
       if (!getStoredAuthToken()) {
+        if (PROTECTED_SCREENS.has(initialRoute.screen)) {
+          setAuthMode('signin');
+          setCurrentScreen('auth');
+        }
         setIsAuthInitializing(false);
         return;
       }
@@ -2271,16 +3587,60 @@ export default function App() {
       try {
         const currentUser = await fetchCurrentUser();
         setUser(mapAuthUserToProfile(currentUser));
-        setCurrentScreen('dashboard');
+        setCurrentScreen((screen) => (screen === 'landing' || screen === 'auth' ? 'dashboard' : screen));
       } catch {
         clearStoredAuthToken();
+        setAuthMode('signin');
+        setCurrentScreen(PROTECTED_SCREENS.has(initialRoute.screen) ? 'auth' : 'landing');
       } finally {
         setIsAuthInitializing(false);
       }
     };
 
     void bootstrapAuth();
-  }, []);
+  }, [initialRoute.screen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const handlePopState = () => {
+      const nextRoute = getRouteStateFromPath(window.location.pathname);
+      if (!user && PROTECTED_SCREENS.has(nextRoute.screen)) {
+        setAuthMode('signin');
+        setCurrentScreen('auth');
+        return;
+      }
+
+      setAuthMode(nextRoute.authMode);
+      setCurrentScreen(nextRoute.screen);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || isAuthInitializing) {
+      return;
+    }
+
+    if (!user && PROTECTED_SCREENS.has(currentScreen)) {
+      if (authMode !== 'signin') {
+        setAuthMode('signin');
+      }
+      if (currentScreen !== 'auth') {
+        setCurrentScreen('auth');
+      }
+      return;
+    }
+
+    const targetPath = getPathForScreen(currentScreen, authMode);
+    if (window.location.pathname !== targetPath) {
+      window.history.replaceState({}, '', targetPath);
+    }
+  }, [authMode, currentScreen, isAuthInitializing, user]);
 
   useEffect(() => {
     if (user) {
@@ -2400,6 +3760,8 @@ export default function App() {
 
   const renderScreen = () => {
     switch (currentScreen) {
+      case 'apiGuide':
+        return <ApiGuideScreen user={user} />;
       case 'landing':
         return <LandingPage onStart={(mode) => { setAuthMode(mode); setCurrentScreen('auth'); }} onWatchDemo={() => setIsDemoOpen(true)} />;
       case 'auth':

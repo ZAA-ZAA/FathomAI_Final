@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PathomAI API Access Guide</title>
+    <style>
+      :root {
+        --bg: #07111b;
+        --panel: #0d1824;
+        --panel-soft: #122233;
+        --border: rgba(255, 255, 255, 0.12);
+        --text: #eff6ff;
+        --muted: rgba(239, 246, 255, 0.68);
+        --accent: #00f2ff;
+        --accent-soft: rgba(0, 242, 255, 0.12);
+        --success: #86efac;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background:
+          radial-gradient(circle at top, rgba(0, 242, 255, 0.12), transparent 36%),
+          linear-gradient(180deg, #050b12 0%, #07111b 100%);
+        color: var(--text);
+        font-family: Inter, Arial, sans-serif;
+      }
+
+      body {
+        min-height: 100vh;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .page {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 40px 0 72px;
+      }
+
+      .hero {
+        padding: 28px;
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 12px 0 10px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.05;
+      }
+
+      .hero p,
+      .section p,
+      li {
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      .note-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+        margin-top: 24px;
+      }
+
+      .note {
+        padding: 16px 18px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
+        gap: 22px;
+        margin-top: 22px;
+      }
+
+      .sidebar,
+      .content-section {
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        background: var(--panel);
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 20px;
+        align-self: start;
+        padding: 20px;
+      }
+
+      .sidebar h2 {
+        margin: 0 0 14px;
+        font-size: 14px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgba(239, 246, 255, 0.55);
+      }
+
+      .sidebar a {
+        display: block;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        border-radius: 14px;
+        text-decoration: none;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .sidebar a:hover {
+        background: var(--accent-soft);
+      }
+
+      .content {
+        display: grid;
+        gap: 18px;
+      }
+
+      .content-section {
+        padding: 22px;
+      }
+
+      .content-section h2 {
+        margin: 0 0 8px;
+        font-size: 22px;
+      }
+
+      .content-section h3 {
+        margin: 20px 0 10px;
+        font-size: 15px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: rgba(239, 246, 255, 0.58);
+      }
+
+      .meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        padding: 8px 12px;
+        border: 1px solid rgba(134, 239, 172, 0.24);
+        border-radius: 999px;
+        background: rgba(134, 239, 172, 0.08);
+        color: var(--success);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .callout {
+        margin-top: 14px;
+        padding: 16px 18px;
+        border-left: 3px solid var(--accent);
+        border-radius: 16px;
+        background: var(--accent-soft);
+      }
+
+      .endpoint-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .endpoint {
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .endpoint strong {
+        color: var(--text);
+      }
+
+      pre {
+        margin: 12px 0 0;
+        padding: 16px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: #050b12;
+        color: #dbeafe;
+        line-height: 1.6;
+        font-family: Consolas, "Cascadia Code", monospace;
+        font-size: 13px;
+      }
+
+      code {
+        font-family: Consolas, "Cascadia Code", monospace;
+      }
+
+      ul {
+        margin: 10px 0 0;
+        padding-left: 20px;
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 14px;
+      }
+
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero">
+        <div class="eyebrow">API Access Guide</div>
+        <h1>Use your personal API key directly with the PathomAI API</h1>
+        <p>
+          Every API key is generated per account. Use it in the <code>X-API-Key</code> header. You do not need to send
+          email, username, or password in your scripts.
+        </p>
+        <div class="meta">Base URL: <span id="base-url"></span></div>
+        <div class="note-grid">
+          <div class="note">
+            <strong>Authentication</strong>
+            <p>Send <code>X-API-Key: pthm_...</code> on every request.</p>
+          </div>
+          <div class="note">
+            <strong>Tenant Scope</strong>
+            <p>The key is tied to your account and tenant, so jobs created by API also appear in the UI.</p>
+          </div>
+          <div class="note">
+            <strong>Security</strong>
+            <p>Treat the key like a password. Store it in environment variables, CI secrets, or a password manager.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="layout">
+        <nav class="sidebar">
+          <h2>Contents</h2>
+          <a href="#quickstart">Quick Start</a>
+          <a href="#endpoints">Core Endpoints</a>
+          <a href="#windows">Windows PowerShell</a>
+          <a href="#linux">Linux and macOS</a>
+          <a href="#httpie">HTTPie</a>
+          <a href="#python">Python</a>
+          <a href="#node">Node.js</a>
+          <a href="#responses">Sample Formats</a>
+          <a href="#errors">Errors and Validation</a>
+        </nav>
+
+        <div class="content">
+          <section class="content-section" id="quickstart">
+            <h2>Quick Start</h2>
+            <p>Create an API key from Settings, copy it once, and store it as an environment variable.</p>
+            <div class="two-col">
+              <div>
+                <h3>Windows PowerShell</h3>
+                <pre><code>$env:PATHOMAI_API_KEY="pthm_your_real_key_here"
+$env:PATHOMAI_BASE_URL="<span class="origin-placeholder"></span>"</code></pre>
+              </div>
+              <div>
+                <h3>Linux or macOS</h3>
+                <pre><code>export PATHOMAI_API_KEY="pthm_your_real_key_here"
+export PATHOMAI_BASE_URL="<span class="origin-placeholder"></span>"</code></pre>
+              </div>
+            </div>
+            <div class="callout">
+              All examples below assume you already set <code>PATHOMAI_API_KEY</code>. Replace sample job IDs and file paths with your real values.
+            </div>
+          </section>
+
+          <section class="content-section" id="endpoints">
+            <h2>Core Endpoints</h2>
+            <div class="endpoint-list">
+              <div class="endpoint"><strong>GET</strong> <code>/api/videos</code><br />List jobs visible to your tenant.</div>
+              <div class="endpoint"><strong>GET</strong> <code>/api/videos/{job_id}</code><br />Get one job with transcript, summary, sentiment, and action items.</div>
+              <div class="endpoint"><strong>POST</strong> <code>/api/videos/upload</code><br />Upload a local video file with multipart form data.</div>
+              <div class="endpoint"><strong>POST</strong> <code>/api/videos/import</code><br />Import a video from a public URL.</div>
+              <div class="endpoint"><strong>POST</strong> <code>/api/videos/{job_id}/retry</code><br />Retry a failed processing job.</div>
+              <div class="endpoint"><strong>POST</strong> <code>/api/videos/{job_id}/summary/regenerate</code><br />Generate a focused summary for one part of a transcript.</div>
+              <div class="endpoint"><strong>POST</strong> <code>/api/videos/{job_id}/chat</code><br />Ask a transcript-grounded question about a video.</div>
+              <div class="endpoint"><strong>POST</strong> <code>/api/videos/{job_id}/chat/suggestions</code><br />Get follow-up questions for the same job.</div>
+            </div>
+          </section>
+
+          <section class="content-section" id="windows">
+            <h2>Windows PowerShell Examples</h2>
+            <h3>List Jobs</h3>
+            <pre><code>$headers = @{ "X-API-Key" = $env:PATHOMAI_API_KEY }
+Invoke-RestMethod `
+  -Method Get `
+  -Uri "$env:PATHOMAI_BASE_URL/api/videos" `
+  -Headers $headers</code></pre>
+
+            <h3>Upload a Local Video</h3>
+            <pre><code>$headers = @{ "X-API-Key" = $env:PATHOMAI_API_KEY }
+$form = @{
+  file = Get-Item "C:\videos\meeting.mp4"
+  language_hint = "auto"
+}
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$env:PATHOMAI_BASE_URL/api/videos/upload" `
+  -Headers $headers `
+  -Form $form</code></pre>
+
+            <h3>Import a Video by URL</h3>
+            <pre><code>$headers = @{
+  "X-API-Key" = $env:PATHOMAI_API_KEY
+  "Content-Type" = "application/json"
+}
+$body = @{
+  video_url = "https://example.com/video.mp4"
+  language_hint = "auto"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$env:PATHOMAI_BASE_URL/api/videos/import" `
+  -Headers $headers `
+  -Body $body</code></pre>
+
+            <h3>Ask AI Chat</h3>
+            <pre><code>$jobId = "replace-with-job-id"
+$headers = @{
+  "X-API-Key" = $env:PATHOMAI_API_KEY
+  "Content-Type" = "application/json"
+}
+$body = @{
+  question = "What decisions were made?"
+  chat_history = @()
+  asked_questions = @()
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$env:PATHOMAI_BASE_URL/api/videos/$jobId/chat" `
+  -Headers $headers `
+  -Body $body</code></pre>
+          </section>
+
+          <section class="content-section" id="linux">
+            <h2>Linux and macOS curl Examples</h2>
+            <h3>List Jobs</h3>
+            <pre><code>curl "$PATHOMAI_BASE_URL/api/videos" \
+  -H "X-API-Key: $PATHOMAI_API_KEY"</code></pre>
+
+            <h3>Upload a Local Video</h3>
+            <pre><code>curl "$PATHOMAI_BASE_URL/api/videos/upload" \
+  -H "X-API-Key: $PATHOMAI_API_KEY" \
+  -F "file=@./meeting.mp4" \
+  -F "language_hint=auto"</code></pre>
+
+            <h3>Import a Video by URL</h3>
+            <pre><code>curl "$PATHOMAI_BASE_URL/api/videos/import" \
+  -H "X-API-Key: $PATHOMAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_url": "https://example.com/video.mp4",
+    "language_hint": "auto"
+  }'</code></pre>
+
+            <h3>Focused Summary</h3>
+            <pre><code>JOB_ID="replace-with-job-id"
+
+curl "$PATHOMAI_BASE_URL/api/videos/$JOB_ID/summary/regenerate" \
+  -H "X-API-Key: $PATHOMAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instruction": "Summarize only the student issue discussion and list the action items."
+  }'</code></pre>
+
+            <h3>Get Follow-up Suggestions</h3>
+            <pre><code>curl "$PATHOMAI_BASE_URL/api/videos/$JOB_ID/chat/suggestions" \
+  -H "X-API-Key: $PATHOMAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asked_questions": ["What decisions were made?"]
+  }'</code></pre>
+          </section>
+
+          <section class="content-section" id="httpie">
+            <h2>HTTPie Examples</h2>
+            <pre><code>http GET "$PATHOMAI_BASE_URL/api/videos" X-API-Key:"$PATHOMAI_API_KEY"
+
+http POST "$PATHOMAI_BASE_URL/api/videos/import" \
+  X-API-Key:"$PATHOMAI_API_KEY" \
+  video_url="https://example.com/video.mp4" \
+  language_hint="auto"
+
+http POST "$PATHOMAI_BASE_URL/api/videos/$JOB_ID/chat" \
+  X-API-Key:"$PATHOMAI_API_KEY" \
+  question="Which student issue came up most often?" \
+  chat_history:='[]' \
+  asked_questions:='[]'</code></pre>
+          </section>
+
+          <section class="content-section" id="python">
+            <h2>Python requests Example</h2>
+            <pre><code>import os
+import requests
+
+BASE_URL = os.environ["PATHOMAI_BASE_URL"]
+API_KEY = os.environ["PATHOMAI_API_KEY"]
+HEADERS = {"X-API-Key": API_KEY}
+
+# List jobs
+jobs = requests.get(f"{BASE_URL}/api/videos", headers=HEADERS, timeout=60)
+jobs.raise_for_status()
+print(jobs.json())
+
+# Import by URL
+payload = {
+    "video_url": "https://example.com/video.mp4",
+    "language_hint": "auto",
+}
+response = requests.post(
+    f"{BASE_URL}/api/videos/import",
+    headers={**HEADERS, "Content-Type": "application/json"},
+    json=payload,
+    timeout=60,
+)
+response.raise_for_status()
+print(response.json())</code></pre>
+          </section>
+
+          <section class="content-section" id="node">
+            <h2>Node.js fetch Example</h2>
+            <pre><code>const BASE_URL = process.env.PATHOMAI_BASE_URL;
+const API_KEY = process.env.PATHOMAI_API_KEY;
+
+const headers = {
+  "X-API-Key": API_KEY,
+  "Content-Type": "application/json",
+};
+
+const response = await fetch(`${BASE_URL}/api/videos/import`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({
+    video_url: "https://example.com/video.mp4",
+    language_hint: "auto",
+  }),
+});
+
+if (!response.ok) {
+  throw new Error(await response.text());
+}
+
+console.log(await response.json());</code></pre>
+          </section>
+
+          <section class="content-section" id="responses">
+            <h2>Sample Formats</h2>
+            <h3>Upload or Import Response</h3>
+            <pre><code>{
+  "id": "job_123",
+  "status": "queued",
+  "message": "Video upload accepted for processing"
+}</code></pre>
+
+            <h3>Video Job Summary</h3>
+            <pre><code>{
+  "id": "job_123",
+  "original_filename": "meeting.mp4",
+  "status": "completed",
+  "summary": "General summary text...",
+  "sentiment": "positive",
+  "action_items": [
+    "Schedule follow-up with guidance counselor."
+  ],
+  "created_at": "2026-03-13T09:00:00Z",
+  "completed_at": "2026-03-13T09:07:00Z"
+}</code></pre>
+
+            <h3>AI Chat Request</h3>
+            <pre><code>{
+  "question": "What decisions were made?",
+  "chat_history": [
+    { "role": "user", "content": "What happened around 01:10?" },
+    { "role": "assistant", "content": "..." }
+  ],
+  "asked_questions": [
+    "What happened around 01:10?"
+  ]
+}</code></pre>
+          </section>
+
+          <section class="content-section" id="errors">
+            <h2>Errors and Validation</h2>
+            <ul>
+              <li><strong>401 Authentication required</strong>: no bearer session or <code>X-API-Key</code> was sent.</li>
+              <li><strong>401 Invalid API key</strong>: the key is wrong, revoked, or no longer valid.</li>
+              <li><strong>400 Unsupported language hint</strong>: allowed values are <code>auto</code>, <code>en</code>, <code>english</code>, <code>tl</code>, <code>tagalog</code>.</li>
+              <li><strong>400 Unsupported video file type</strong>: only supported video extensions can be uploaded.</li>
+              <li><strong>404 Video job not found</strong>: the job is not in your tenant scope.</li>
+              <li><strong>409 Only failed jobs can be retried</strong>: retry works only on failed jobs.</li>
+              <li><strong>Focused summary validation</strong>: <code>instruction</code> must be between 5 and 2000 characters.</li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const origin = window.location.origin;
+      const baseUrl = document.getElementById("base-url");
+      if (baseUrl) {
+        baseUrl.textContent = origin;
+      }
+      document.querySelectorAll(".origin-placeholder").forEach((node) => {
+        node.textContent = origin;
+      });
+    </script>
+  </body>
+</html>
