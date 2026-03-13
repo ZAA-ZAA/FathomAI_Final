@@ -21,7 +21,7 @@ Video intelligence platform for transcription, analysis, and video-specific AI c
 ## High-Level Flow
 
 1. Video is uploaded or imported into `pathomAI-main`
-2. Main backend stores the job and local source file
+2. Main backend stores the job and source video. Source videos can stay on local disk or be persisted to Cloudflare R2.
 3. FFmpeg extracts WAV audio
 4. OpenAI `whisper-1` returns transcript plus timestamps
 5. Main backend calls `ai-agents-lite-main`
@@ -48,12 +48,20 @@ Root file: `[.env](C:/Users/zoen/Downloads/OJT/Projects/Week_9_FathomAI/.env)`
 OPENAI_API_KEY=your-openai-key
 DATABASE_URL=postgresql+psycopg://pathomai:pathomai@db:5432/pathomai
 AGENT_SERVICE_URL=http://ai-agents:8000
+VIDEO_STORAGE_PROVIDER=r2
+R2_BUCKET_NAME=fathom-videos
+R2_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=your-r2-access-key-id
+R2_SECRET_ACCESS_KEY=your-r2-secret-access-key
+R2_KEY_PREFIX=videos
 ```
 
 Notes:
 - `OPENAI_API_KEY` is required for both Whisper and `gpt-4o`
 - `DATABASE_URL` is used by the main backend
 - `AGENT_SERVICE_URL` is how `pathomAI-main` reaches `ai-agents-lite-main`
+- `VIDEO_STORAGE_PROVIDER=r2` stores original source videos in Cloudflare R2 instead of the container filesystem
+- `R2_KEY_PREFIX` is optional and defaults to `videos`
 
 ## Run With Docker
 

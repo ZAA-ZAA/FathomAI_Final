@@ -31,6 +31,12 @@ class Settings:
     agent_service_url: str = os.getenv("AGENT_SERVICE_URL", "http://localhost:8001")
     auth_session_ttl_hours: int = int(os.getenv("AUTH_SESSION_TTL_HOURS", "168"))
     max_upload_size_bytes: int = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", str(500 * 1024 * 1024)))
+    video_storage_provider: str = os.getenv("VIDEO_STORAGE_PROVIDER", "local").strip().lower()
+    r2_bucket_name: str = os.getenv("R2_BUCKET_NAME", "").strip()
+    r2_endpoint_url: str = os.getenv("R2_ENDPOINT_URL", "").strip().rstrip("/")
+    r2_access_key_id: str = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+    r2_secret_access_key: str = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    r2_key_prefix: str = os.getenv("R2_KEY_PREFIX", "videos").strip().strip("/")
     cors_origins: tuple[str, ...] = (
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -54,6 +60,26 @@ class Settings:
 
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.video_storage_provider not in {"local", "r2"}:
+            raise ValueError("VIDEO_STORAGE_PROVIDER must be either 'local' or 'r2'")
+
+        if self.video_storage_provider == "r2":
+            missing = [
+                name
+                for name, value in (
+                    ("R2_BUCKET_NAME", self.r2_bucket_name),
+                    ("R2_ENDPOINT_URL", self.r2_endpoint_url),
+                    ("R2_ACCESS_KEY_ID", self.r2_access_key_id),
+                    ("R2_SECRET_ACCESS_KEY", self.r2_secret_access_key),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "R2 storage is enabled but the following environment variables are missing: "
+                    + ", ".join(missing)
+                )
 
 
 settings = Settings()

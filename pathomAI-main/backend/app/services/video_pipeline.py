@@ -12,13 +12,15 @@ from app.db import SessionLocal
 from app.models import JobStatus, VideoJob
 from app.services.agent_client import request_transcript_analysis
 from app.services.media import extract_audio
+from app.services.object_storage import download_video_source, is_remote_storage_path, upload_video_source
 from app.services.transcription import transcribe_audio_file
 from app.services.video_ingest import build_filename_from_download, download_video_from_url
 from app.services.media import probe_video_metadata
 
 
-def process_video_job(job_id: str, audio_root: Path) -> None:
+def process_video_job(job_id: str, audio_root: Path, local_source_path: str | None = None) -> None:
     audio_path: Path | None = None
+    local_video_path: Path | None = Path(local_source_path) if local_source_path else None
     session = SessionLocal()
     try:
         job = session.get(VideoJob, job_id)
@@ -26,16 +28,15 @@ def process_video_job(job_id: str, audio_root: Path) -> None:
             return
 
         if job.source_type == "url" and job.source_url and not job.storage_path:
-            stored_path, download_metadata = download_video_from_url(
+            local_video_path, download_metadata = download_video_from_url(
                 job.source_url,
                 settings.upload_dir / job.tenant_id / job.id,
             )
-            metadata = probe_video_metadata(stored_path)
-            job.storage_path = str(stored_path)
-            job.stored_filename = stored_path.name
-            job.original_filename = build_filename_from_download(download_metadata, stored_path)[:255]
+            metadata = probe_video_metadata(local_video_path)
+            job.stored_filename = local_video_path.name
+            job.original_filename = build_filename_from_download(download_metadata, local_video_path)[:255]
             job.content_type = download_metadata.get("content_type")
-            job.file_size_bytes = stored_path.stat().st_size
+            job.file_size_bytes = local_video_path.stat().st_size
             job.duration_seconds = metadata.get("duration_seconds")
             job.video_metadata = {
                 **metadata,
@@ -49,12 +50,21 @@ def process_video_job(job_id: str, audio_root: Path) -> None:
                     "thumbnail": download_metadata.get("thumbnail"),
                 },
             }
+            job.storage_path = upload_video_source(
+                local_video_path,
+                job.tenant_id,
+                job.id,
+                job.stored_filename,
+                job.content_type,
+            )
             session.commit()
 
+        if local_video_path is None:
+            local_video_path = _resolve_local_video_path(job)
+
         _update_status(session, job, JobStatus.EXTRACTING_AUDIO.value)
-        video_path = Path(job.storage_path)
-        audio_path = audio_root / job.id / f"{video_path.stem}.wav"
-        extract_audio(video_path, audio_path)
+        audio_path = audio_root / job.id / f"{local_video_path.stem}.wav"
+        extract_audio(local_video_path, audio_path)
 
         _update_status(session, job, JobStatus.TRANSCRIBING.value)
         transcription = transcribe_audio_file(audio_path, job.language_hint)
@@ -85,6 +95,14 @@ def process_video_job(job_id: str, audio_root: Path) -> None:
         session.close()
         if audio_path and audio_path.exists():
             audio_path.unlink(missing_ok=True)
+        if (
+            local_video_path
+            and local_video_path.exists()
+            and 'job' in locals()
+            and job is not None
+            and is_remote_storage_path(job.storage_path)
+        ):
+            local_video_path.unlink(missing_ok=True)
 
 
 def _update_status(session: Session, job: VideoJob, status: str) -> None:
@@ -100,3 +118,17 @@ def _fallback_language(language_hint: str) -> str | None:
     if normalized in {"tl", "tagalog"}:
         return "tl"
     return None
+
+
+def _resolve_local_video_path(job: VideoJob) -> Path:
+    if not job.storage_path:
+        raise FileNotFoundError("Video source file is missing")
+
+    if is_remote_storage_path(job.storage_path):
+        destination_path = settings.upload_dir / job.tenant_id / job.id / job.stored_filename
+        return download_video_source(job.storage_path, destination_path)
+
+    candidate = Path(job.storage_path)
+    if not candidate.exists():
+        raise FileNotFoundError("Video source file is missing")
+    return candidate

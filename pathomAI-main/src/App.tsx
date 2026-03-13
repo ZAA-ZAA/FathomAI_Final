@@ -3470,32 +3470,49 @@ X-API-Key: pat_your_generated_api_key
 const API_ACCESS_GUIDE_PATH = '/developer-api-guide';
 const PROTECTED_SCREENS = new Set<Screen>(['dashboard', 'analysis', 'review', 'history', 'settings']);
 
-const getRouteStateFromPath = (pathname: string): { screen: Screen; authMode: 'signin' | 'signup' } => {
+const getRouteStateFromLocation = (
+  pathname: string,
+  search: string,
+): { screen: Screen; authMode: 'signin' | 'signup'; jobId: string | null } => {
   const normalizedPath = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+  const searchParams = new URLSearchParams(search);
+  const jobId = searchParams.get('jobId');
 
   switch (normalizedPath) {
     case '/developer-api-guide':
-      return { screen: 'apiGuide', authMode: 'signin' };
+      return { screen: 'apiGuide', authMode: 'signin', jobId: null };
     case '/login':
-      return { screen: 'auth', authMode: 'signin' };
+      return { screen: 'auth', authMode: 'signin', jobId: null };
     case '/signup':
-      return { screen: 'auth', authMode: 'signup' };
+      return { screen: 'auth', authMode: 'signup', jobId: null };
     case '/home':
-      return { screen: 'dashboard', authMode: 'signin' };
+      return { screen: 'dashboard', authMode: 'signin', jobId: null };
     case '/history':
-      return { screen: 'history', authMode: 'signin' };
+      return { screen: 'history', authMode: 'signin', jobId: null };
     case '/settings':
-      return { screen: 'settings', authMode: 'signin' };
+      return { screen: 'settings', authMode: 'signin', jobId: null };
     case '/analysis':
-      return { screen: 'analysis', authMode: 'signin' };
+      return { screen: 'analysis', authMode: 'signin', jobId };
     case '/review':
-      return { screen: 'review', authMode: 'signin' };
+      return { screen: 'review', authMode: 'signin', jobId };
     default:
-      return { screen: 'landing', authMode: 'signin' };
+      return { screen: 'landing', authMode: 'signin', jobId: null };
   }
 };
 
-const getPathForScreen = (screen: Screen, authMode: 'signin' | 'signup') => {
+const getUrlForScreen = (
+  screen: Screen,
+  authMode: 'signin' | 'signup',
+  jobId: string | null,
+) => {
+  const buildUrl = (pathname: string, nextJobId?: string | null) => {
+    if (nextJobId) {
+      const params = new URLSearchParams({ jobId: nextJobId });
+      return `${pathname}?${params.toString()}`;
+    }
+    return pathname;
+  };
+
   switch (screen) {
     case 'apiGuide':
       return '/developer-api-guide';
@@ -3508,9 +3525,9 @@ const getPathForScreen = (screen: Screen, authMode: 'signin' | 'signup') => {
     case 'settings':
       return '/settings';
     case 'analysis':
-      return '/analysis';
+      return buildUrl('/analysis', jobId);
     case 'review':
-      return '/review';
+      return buildUrl('/review', jobId);
     case 'landing':
     default:
       return '/';
@@ -3521,7 +3538,10 @@ const getPathForScreen = (screen: Screen, authMode: 'signin' | 'signup') => {
 
 export default function App() {
   const initialRoute = useMemo(
-    () => getRouteStateFromPath(typeof window === 'undefined' ? '/' : window.location.pathname),
+    () => getRouteStateFromLocation(
+      typeof window === 'undefined' ? '/' : window.location.pathname,
+      typeof window === 'undefined' ? '' : window.location.search,
+    ),
     [],
   );
   const [currentScreen, setCurrentScreen] = useState<Screen>(initialRoute.screen);
@@ -3534,7 +3554,7 @@ export default function App() {
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [selectedJob, setSelectedJob] = useState<VideoJob | null>(null);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(initialRoute.jobId);
 
   const handleUnauthorized = useCallback((message: string) => {
     if (['Authentication required', 'Invalid session', 'Session expired'].includes(message)) {
@@ -3606,14 +3626,20 @@ export default function App() {
     }
 
     const handlePopState = () => {
-      const nextRoute = getRouteStateFromPath(window.location.pathname);
+      const nextRoute = getRouteStateFromLocation(window.location.pathname, window.location.search);
       if (!user && PROTECTED_SCREENS.has(nextRoute.screen)) {
         setAuthMode('signin');
+        setActiveJobId(null);
+        setSelectedJob(null);
         setCurrentScreen('auth');
         return;
       }
 
       setAuthMode(nextRoute.authMode);
+      setActiveJobId(nextRoute.jobId);
+      if (!nextRoute.jobId) {
+        setSelectedJob(null);
+      }
       setCurrentScreen(nextRoute.screen);
     };
 
@@ -3636,11 +3662,12 @@ export default function App() {
       return;
     }
 
-    const targetPath = getPathForScreen(currentScreen, authMode);
-    if (window.location.pathname !== targetPath) {
-      window.history.replaceState({}, '', targetPath);
+    const targetUrl = getUrlForScreen(currentScreen, authMode, activeJobId);
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (currentUrl !== targetUrl) {
+      window.history.replaceState({}, '', targetUrl);
     }
-  }, [authMode, currentScreen, isAuthInitializing, user]);
+  }, [activeJobId, authMode, currentScreen, isAuthInitializing, user]);
 
   useEffect(() => {
     if (user) {
@@ -3650,6 +3677,65 @@ export default function App() {
       setJobsLoading(false);
     }
   }, [loadJobs, user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    if (!activeJobId || (currentScreen !== 'analysis' && currentScreen !== 'review')) {
+      return;
+    }
+
+    if (selectedJob?.id === activeJobId) {
+      return;
+    }
+
+    const existingJob = jobs.find((job) => job.id === activeJobId);
+    if (existingJob && currentScreen === 'analysis') {
+      setSelectedJob(existingJob);
+      return;
+    }
+
+    let isCancelled = false;
+    const restoreSelectedJob = async () => {
+      try {
+        const detailedJob = await fetchVideoJob(activeJobId);
+        if (isCancelled) {
+          return;
+        }
+        setSelectedJob(detailedJob);
+        setCurrentScreen(detailedJob.status === 'completed' ? 'review' : 'analysis');
+      } catch (error) {
+        if (isCancelled) {
+          return;
+        }
+        if (error instanceof Error) {
+          handleUnauthorized(error.message);
+          setJobsError(error.message);
+        }
+        setSelectedJob(null);
+        setActiveJobId(null);
+        setCurrentScreen('dashboard');
+      }
+    };
+
+    void restoreSelectedJob();
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeJobId, currentScreen, handleUnauthorized, jobs, selectedJob?.id, user]);
+
+  useEffect(() => {
+    if (!user || isAuthInitializing) {
+      return;
+    }
+
+    if ((currentScreen === 'analysis' || currentScreen === 'review') && !activeJobId) {
+      setSelectedJob(null);
+      setCurrentScreen('history');
+    }
+  }, [activeJobId, currentScreen, isAuthInitializing, user]);
 
   const handleAuthSuccess = (authenticatedUser: UserProfile) => {
     setUser(authenticatedUser);

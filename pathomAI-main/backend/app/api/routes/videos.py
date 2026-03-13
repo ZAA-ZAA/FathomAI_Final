@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,12 @@ from app.services.agent_client import (
 )
 from app.services.auth import AuthContext, require_auth_context
 from app.services.media import probe_video_metadata
+from app.services.object_storage import (
+    download_video_source,
+    is_remote_storage_path,
+    open_video_stream,
+    upload_video_source,
+)
 from app.services.video_pipeline import process_video_job
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
@@ -76,6 +82,17 @@ def stream_video_source(
     job = _get_tenant_job(db, auth_context, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video job not found")
+
+    if not job.storage_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video source file not found")
+
+    if is_remote_storage_path(job.storage_path):
+        body, media_type, headers = open_video_stream(
+            job.storage_path,
+            job.content_type,
+            job.original_filename,
+        )
+        return StreamingResponse(_iter_stream_body(body), media_type=media_type, headers=headers)
 
     file_path = Path(job.storage_path)
     if not file_path.exists():
@@ -128,16 +145,26 @@ def upload_video(
     finally:
         file.file.close()
 
-    metadata = probe_video_metadata(stored_path)
-    job.storage_path = str(stored_path)
-    job.stored_filename = stored_path.name
-    job.file_size_bytes = file_size
-    job.duration_seconds = metadata.get("duration_seconds")
-    job.video_metadata = metadata
+    try:
+        metadata = probe_video_metadata(stored_path)
+        job.stored_filename = stored_path.name
+        job.file_size_bytes = file_size
+        job.duration_seconds = metadata.get("duration_seconds")
+        job.video_metadata = metadata
+        job.storage_path = upload_video_source(
+            stored_path,
+            auth_context.tenant_id,
+            job.id,
+            job.stored_filename,
+            job.content_type,
+        )
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(process_video_job, job.id, settings.audio_dir)
+    background_tasks.add_task(process_video_job, job.id, settings.audio_dir, str(stored_path))
 
     return VideoUploadResponse(id=job.id, status=job.status, message="Video upload accepted for processing")
 
@@ -188,10 +215,10 @@ def retry_video_job(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only failed jobs can be retried")
 
     if job.source_type == "url":
-        if not job.source_url:
+        if not job.source_url and not job.storage_path:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The original source URL is missing")
 
-        file_path = Path(job.storage_path) if job.storage_path else None
+        file_path = Path(job.storage_path) if job.storage_path and not is_remote_storage_path(job.storage_path) else None
         if file_path and not file_path.exists():
             job.storage_path = ""
             job.stored_filename = job.original_filename
@@ -200,8 +227,13 @@ def retry_video_job(
             job.duration_seconds = None
             job.video_metadata = {}
     else:
-        file_path = Path(job.storage_path)
-        if not file_path.exists():
+        if not job.storage_path:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original video file is missing")
+        if is_remote_storage_path(job.storage_path):
+            file_path = None
+        else:
+            file_path = Path(job.storage_path)
+        if file_path and not file_path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original video file is missing")
 
     job.status = JobStatus.QUEUED.value
@@ -410,6 +442,13 @@ def _normalize_language_hint(language_hint: str) -> str:
     if language_hint in {"tagalog"}:
         return "tl"
     return language_hint
+
+
+def _iter_stream_body(body):
+    try:
+        yield from body.iter_chunks()
+    finally:
+        body.close()
 
 
 def _create_job_record(
