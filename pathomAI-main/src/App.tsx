@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   Clock,
   MoreVertical,
+  ArrowLeft,
   ArrowRight,
   User,
   Star,
@@ -81,6 +82,13 @@ interface UserProfile {
   tenantId: string;
   tenantName: string;
 }
+
+const HERO_TYPING_PHRASES = [
+  'searchable insights',
+  'focused summaries',
+  'actionable next steps',
+  'timestamped answers',
+];
 
 type LanguageHint = 'auto' | 'en' | 'tl';
 type ProcessingStep = 'Uploading' | 'Extracting' | 'Transcribing' | 'Summarizing' | 'Failed';
@@ -373,6 +381,56 @@ const DemoModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
 
 // --- Screens ---
 
+const HeroTypingText = () => {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [visibleText, setVisibleText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    const currentPhrase = HERO_TYPING_PHRASES[phraseIndex];
+    const isPhraseComplete = visibleText === currentPhrase;
+    const isPhraseCleared = visibleText.length === 0;
+
+    const timeout = window.setTimeout(() => {
+      if (!isDeleting) {
+        if (isPhraseComplete) {
+          setIsDeleting(true);
+          return;
+        }
+        setVisibleText(currentPhrase.slice(0, visibleText.length + 1));
+        return;
+      }
+
+      if (!isPhraseCleared) {
+        setVisibleText(currentPhrase.slice(0, visibleText.length - 1));
+        return;
+      }
+
+      setIsDeleting(false);
+      setPhraseIndex((currentIndex) => (currentIndex + 1) % HERO_TYPING_PHRASES.length);
+    }, isPhraseComplete ? 1400 : isDeleting ? 45 : 85);
+
+    return () => window.clearTimeout(timeout);
+  }, [isDeleting, phraseIndex, visibleText]);
+
+  return (
+    <span
+      className="inline-flex min-h-[1.1em] min-w-[15ch] items-center justify-center text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan via-sky-300 to-neon-purple"
+      aria-label={HERO_TYPING_PHRASES[phraseIndex]}
+    >
+      <span>{visibleText || '\u00A0'}</span>
+      <motion.span
+        aria-hidden="true"
+        animate={{ opacity: [1, 0, 1] }}
+        transition={{ duration: 0.9, repeat: Number.POSITIVE_INFINITY, ease: 'easeInOut' }}
+        className="ml-1 text-neon-cyan"
+      >
+        |
+      </motion.span>
+    </span>
+  );
+};
+
 const LandingPage = ({
   onStart,
   onWatchDemo,
@@ -393,10 +451,10 @@ const LandingPage = ({
         <Button variant="secondary" className="px-5 py-2 text-sm" onClick={() => onStart('signin')}>Sign In</Button>
       </div>
     </nav>
-
+  
     <main className="flex-1 flex flex-col items-center justify-center px-6 text-center relative overflow-hidden">
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] cosmic-gradient opacity-30 pointer-events-none" />
-
+  
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -410,7 +468,7 @@ const LandingPage = ({
         <h1 className="text-6xl md:text-8xl font-bold tracking-tight mb-6 leading-[1.05]">
           Turn meetings and recordings
           <br />
-          into <span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-neon-purple">searchable insights</span>
+          into <HeroTypingText />
         </h1>
         <p className="text-lg md:text-xl text-white/60 mb-10 max-w-3xl mx-auto leading-relaxed">
           Upload a video, transcribe English and Tagalog speech with Whisper, then generate a summary,
@@ -425,7 +483,7 @@ const LandingPage = ({
           </Button>
         </div>
       </motion.div>
-
+  
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -455,9 +513,11 @@ const LandingPage = ({
 const AuthScreen = ({
   initialMode = 'signin',
   onAuthSuccess,
+  onBack,
 }: {
   initialMode?: 'signin' | 'signup';
   onAuthSuccess: (user: UserProfile) => void;
+  onBack: () => void;
 }) => {
   const [mode, setMode] = useState(initialMode);
   const [fullName, setFullName] = useState('');
@@ -531,6 +591,14 @@ const AuthScreen = ({
         animate={{ opacity: 1, scale: 1 }}
         className="glass-panel w-full max-w-md p-10 relative z-10"
       >
+        <button
+          type="button"
+          onClick={onBack}
+          className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/70 transition-colors hover:border-neon-cyan/40 hover:text-white"
+        >
+          <ArrowLeft size={16} />
+          Back to Landing
+        </button>
         <div className="flex flex-col items-center mb-10">
           <div className="w-12 h-12 bg-gradient-to-br from-neon-cyan to-neon-purple rounded-xl flex items-center justify-center mb-4">
             <Rocket className="text-midnight w-7 h-7" />
@@ -3851,14 +3919,17 @@ export default function App() {
     }
   }, []);
 
-  const loadJobs = useCallback(async () => {
+  const loadJobs = useCallback(async (options?: { silent?: boolean }) => {
     if (!user) {
       setJobs([]);
       setJobsLoading(false);
       return;
     }
 
-    setJobsLoading(true);
+    const shouldShowSpinner = !options?.silent;
+    if (shouldShowSpinner) {
+      setJobsLoading(true);
+    }
     try {
       const jobList = await fetchVideoJobs();
       setJobs(jobList);
@@ -3876,7 +3947,9 @@ export default function App() {
       handleUnauthorized(message);
       setJobsError(message);
     } finally {
-      setJobsLoading(false);
+      if (shouldShowSpinner) {
+        setJobsLoading(false);
+      }
     }
   }, [handleUnauthorized, user]);
 
@@ -3964,6 +4037,26 @@ export default function App() {
       setJobsLoading(false);
     }
   }, [loadJobs, user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    if (!['dashboard', 'history', 'analysis', 'review'].includes(currentScreen)) {
+      return;
+    }
+
+    const pollJobs = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      void loadJobs({ silent: true });
+    };
+
+    const intervalId = window.setInterval(pollJobs, 5000);
+    return () => window.clearInterval(intervalId);
+  }, [currentScreen, loadJobs, user]);
 
   useEffect(() => {
     if (!user) {
@@ -4144,8 +4237,8 @@ export default function App() {
         return <ApiGuideScreen user={user} />;
       case 'landing':
         return <LandingPage onStart={(mode) => { setAuthMode(mode); setCurrentScreen('auth'); }} onWatchDemo={() => setIsDemoOpen(true)} />;
-      case 'auth':
-        return <AuthScreen initialMode={authMode} onAuthSuccess={handleAuthSuccess} />;
+        case 'auth':
+          return <AuthScreen initialMode={authMode} onAuthSuccess={handleAuthSuccess} onBack={() => setCurrentScreen('landing')} />;
       case 'dashboard':
         return (
           <DashboardLayout activeTab="dashboard" onNavigate={setCurrentScreen} user={user} onLogout={handleLogout}>
