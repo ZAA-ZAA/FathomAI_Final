@@ -12,3 +12,4 @@ class CustomSummaryRequest(BaseModel):
 
 class CustomSummaryResponse(BaseModel):
     summary: str
+    action_items: list[str] = Field(default_factory=list)

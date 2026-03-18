@@ -32,26 +32,33 @@ def upload_video_source(
     if not is_remote_storage_enabled():
         return str(local_path)
 
-    bucket_name = settings.r2_bucket_name
-    object_key = build_video_object_key(tenant_id, job_id, stored_filename)
-    put_kwargs = {
-        "Bucket": bucket_name,
-        "Key": object_key,
-        "Body": local_path.open("rb"),
-    }
-    if content_type:
-        put_kwargs["ContentType"] = content_type
-
     try:
-        with put_kwargs["Body"] as file_handle:
-            get_s3_client().put_object(**put_kwargs)
+        with local_path.open("rb") as file_handle:
+            return _upload_object(file_handle, build_video_object_key(tenant_id, job_id, stored_filename), content_type)
     except (BotoCoreError, ClientError) as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Unable to upload the source video to object storage.",
         ) from exc
 
-    return build_remote_storage_path(bucket_name, object_key)
+
+def upload_report_bytes(
+    pdf_bytes: bytes,
+    tenant_id: str,
+    job_id: str,
+    relative_path: str,
+    content_type: str = "application/pdf",
+) -> str:
+    if not is_remote_storage_enabled():
+        raise RuntimeError("Remote object storage is not enabled")
+
+    try:
+        return _upload_object(pdf_bytes, build_report_object_key(tenant_id, job_id, relative_path), content_type)
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to upload the report PDF to object storage.",
+        ) from exc
 
 
 def download_video_source(storage_path: str, destination_path: Path) -> Path:
@@ -80,7 +87,7 @@ def download_video_source(storage_path: str, destination_path: Path) -> Path:
     return destination_path
 
 
-def open_video_stream(storage_path: str, content_type: str | None, filename: str) -> tuple[object, str, dict[str, str]]:
+def open_storage_stream(storage_path: str, content_type: str | None, filename: str) -> tuple[object, str, dict[str, str]]:
     bucket_name, object_key = parse_remote_storage_path(storage_path)
     try:
         response = get_s3_client().get_object(Bucket=bucket_name, Key=object_key)
@@ -109,8 +116,17 @@ def open_video_stream(storage_path: str, content_type: str | None, filename: str
     return response["Body"], media_type, headers
 
 
+def open_video_stream(storage_path: str, content_type: str | None, filename: str) -> tuple[object, str, dict[str, str]]:
+    return open_storage_stream(storage_path, content_type, filename)
+
+
 def build_video_object_key(tenant_id: str, job_id: str, stored_filename: str) -> str:
     return f"{settings.r2_key_prefix}/{tenant_id}/{job_id}/{Path(stored_filename).name}"
+
+
+def build_report_object_key(tenant_id: str, job_id: str, relative_path: str) -> str:
+    normalized_path = Path(relative_path).as_posix().lstrip("/")
+    return f"{settings.r2_key_prefix}/{tenant_id}/{job_id}/reports/{normalized_path}"
 
 
 def build_remote_storage_path(bucket_name: str, object_key: str) -> str:
@@ -141,3 +157,16 @@ def get_s3_client():
         region_name="auto",
         config=Config(signature_version="s3v4", retries={"max_attempts": 3, "mode": "standard"}),
     )
+
+
+def _upload_object(body: object, object_key: str, content_type: str | None) -> str:
+    bucket_name = settings.r2_bucket_name
+    put_kwargs = {
+        "Bucket": bucket_name,
+        "Key": object_key,
+        "Body": body,
+    }
+    if content_type:
+        put_kwargs["ContentType"] = content_type
+    get_s3_client().put_object(**put_kwargs)
+    return build_remote_storage_path(bucket_name, object_key)

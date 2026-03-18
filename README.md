@@ -54,6 +54,15 @@ R2_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
 R2_ACCESS_KEY_ID=your-r2-access-key-id
 R2_SECRET_ACCESS_KEY=your-r2-secret-access-key
 R2_KEY_PREFIX=videos
+GMAIL_FROM=your-gmail-address@gmail.com
+GMAIL_APP_PASSWORD=your-gmail-app-password
+HOST_BRIDGE_WINDOWS_ROOT=C:/Users
+HOST_BRIDGE_LINUX_ROOT=/home
+HOST_MOUNT_WINDOWS_ROOT=/host/windows
+HOST_MOUNT_LINUX_ROOT=/host/linux
+CLIENT_WINDOWS_ROOT=C:\Users
+CLIENT_WSL_WINDOWS_ROOT=/mnt/c/Users
+CLIENT_LINUX_ROOT=/home
 ```
 
 Notes:
@@ -62,6 +71,16 @@ Notes:
 - `AGENT_SERVICE_URL` is how `pathomAI-main` reaches `ai-agents-lite-main`
 - `VIDEO_STORAGE_PROVIDER=r2` stores original source videos in Cloudflare R2 instead of the container filesystem
 - `R2_KEY_PREFIX` is optional and defaults to `videos`
+- `GMAIL_FROM` and `GMAIL_APP_PASSWORD` are required only if you want optional summary email delivery
+- Generated PDF reports are stored in managed storage
+- With `VIDEO_STORAGE_PROVIDER=r2`, reports are stored in Cloudflare R2 alongside the source videos
+- With `VIDEO_STORAGE_PROVIDER=local`, reports are written under `./exports` on the host when you run with Docker
+- `export_pdf_path` can be a relative logical path like `reports/meeting-summary.pdf`
+- `export_pdf_path` can also be an absolute Windows path like `C:\Users\zoen\Downloads\meeting-summary.pdf`
+- `export_pdf_path` can also be an absolute WSL path like `/mnt/c/Users/zoen/Downloads/meeting-summary.pdf`
+- `export_pdf_path` can also be an absolute Linux path like `/home/zoen/Downloads/meeting-summary.pdf`
+- Absolute paths work only when they fall under the mounted host bridge roots configured above
+- When Docker Compose is started from Windows, `HOST_BRIDGE_WINDOWS_ROOT` should point to the Windows host path such as `C:/Users`, not the WSL path `/mnt/c/Users`
 
 ## Run With Docker
 
@@ -153,10 +172,12 @@ You do not need an OAuth token for the current implementation if the file is alr
 
 ## Storage Notes
 
-Videos are stored locally by the main backend.
+Source videos are stored by the main backend using the configured storage provider.
 
-- Local non-Docker run: `pathomAI-main/backend/storage/uploads`
-- Docker run: inside the `main-app` container under `/app/backend/storage/uploads`
+- `VIDEO_STORAGE_PROVIDER=local`: videos stay under `pathomAI-main/backend/storage/uploads`
+- `VIDEO_STORAGE_PROVIDER=r2`: videos are persisted to Cloudflare R2 and streamed back through the backend when needed
+- PDF exports are generated on the backend and stored in the same managed storage strategy: local storage or Cloudflare R2
+- The Docker stack mounts Windows and Linux host bridge roots so API callers can optionally use absolute `file_path` and `export_pdf_path` values when the backend is running on the same machine
 
 ## Key Model Configuration
 

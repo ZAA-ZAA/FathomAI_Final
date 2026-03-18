@@ -48,7 +48,10 @@ import {
   fetchVideoChatSuggestions,
   fetchVideoJob,
   fetchVideoJobs,
+  fetchVideoReportBlob,
   fetchVideoSourceUrl,
+  generateVideoReport,
+  emailVideoReport,
   getStoredAuthToken,
   regenerateVideoSummary,
   retryVideoJob,
@@ -153,20 +156,19 @@ const formatRelativeTime = (value: string) => {
   return formatter.format(diffDays, 'day');
 };
 
-const escapeHtml = (value: string) => value
-  .replaceAll('&', '&amp;')
-  .replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;')
-  .replaceAll("'", '&#39;');
-
-const formatExportTimestamp = (value = new Date()) => new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-}).format(value);
-
 const downloadJsonFile = (filename: string, payload: unknown) => {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+const downloadBlobFile = (filename: string, blob: Blob) => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -1742,7 +1744,15 @@ const AnalysisScreen = ({
   );
 };
 
-const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
+const ReviewScreen = ({
+  job,
+  defaultRecipientEmail,
+  onRefreshJob,
+}: {
+  job: VideoJob | null;
+  defaultRecipientEmail: string;
+  onRefreshJob: (jobId: string) => Promise<void>;
+}) => {
   const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'chat'>('summary');
   const [copied, setCopied] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -1766,12 +1776,30 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   const [isSummaryMenuOpen, setIsSummaryMenuOpen] = useState(false);
   const [showTranscriptTimestamps, setShowTranscriptTimestamps] = useState(true);
   const [isTranscriptMenuOpen, setIsTranscriptMenuOpen] = useState(false);
+  const [reportMessage, setReportMessage] = useState<string | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportActionLoading, setReportActionLoading] = useState<'summary-export' | 'transcript-export' | 'summary-email' | 'transcript-email' | null>(null);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [emailTarget, setEmailTarget] = useState<'summary' | 'transcript'>('summary');
+  const [emailRecipient, setEmailRecipient] = useState(defaultRecipientEmail);
   const summaryMenuRef = useRef<HTMLDivElement | null>(null);
   const transcriptMenuRef = useRef<HTMLDivElement | null>(null);
   const chatMessagesContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const actionItems = job?.action_items ?? [];
+  const storedCustomActionItems = useMemo(() => {
+    const rawValue = job?.video_metadata?.custom_summary_action_items;
+    if (!Array.isArray(rawValue)) {
+      return [];
+    }
+    return rawValue
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean);
+  }, [job?.video_metadata]);
+
+  const actionItems = isShowingCustomSummary
+    ? (customSummaryResult?.action_items?.length ? customSummaryResult.action_items : storedCustomActionItems)
+    : (job?.action_items ?? []);
   const summaryText = job?.summary ?? 'No summary generated yet.';
   const activeSummaryText = isShowingCustomSummary && customSummaryResult?.summary
     ? customSummaryResult.summary
@@ -1829,6 +1857,31 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
   const chatUnavailable = !hasChatContext;
   const hasConversation = chatMessages.length > 0 || Boolean(pendingQuestion);
   const showSuggestedQuestions = !hasConversation;
+  const summaryReportRecord = useMemo(() => {
+    const rawReports = job?.video_metadata?.reports;
+    if (!rawReports || typeof rawReports !== 'object' || Array.isArray(rawReports)) {
+      return null;
+    }
+    const summaryReport = (rawReports as Record<string, unknown>).summary;
+    return summaryReport && typeof summaryReport === 'object' && !Array.isArray(summaryReport)
+      ? summaryReport as Record<string, unknown>
+      : null;
+  }, [job?.video_metadata]);
+  const transcriptReportRecord = useMemo(() => {
+    const rawReports = job?.video_metadata?.reports;
+    if (!rawReports || typeof rawReports !== 'object' || Array.isArray(rawReports)) {
+      return null;
+    }
+    const transcriptReport = (rawReports as Record<string, unknown>).transcript;
+    return transcriptReport && typeof transcriptReport === 'object' && !Array.isArray(transcriptReport)
+      ? transcriptReport as Record<string, unknown>
+      : null;
+  }, [job?.video_metadata]);
+
+  const getReportRecord = useCallback(
+    (target: 'summary' | 'transcript') => (target === 'summary' ? summaryReportRecord : transcriptReportRecord),
+    [summaryReportRecord, transcriptReportRecord],
+  );
 
   const handleRegenerateSummary = useCallback(async () => {
     if (!job?.id) {
@@ -1887,315 +1940,83 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleExportPDF = useCallback((target: 'summary' | 'transcript') => {
+  const handleExportPDF = useCallback(async (target: 'summary' | 'transcript') => {
+    if (!job?.id) {
+      return;
+    }
+
     setIsSummaryMenuOpen(false);
     setIsTranscriptMenuOpen(false);
     setIsSummaryModalOpen(false);
-
-    const title = escapeHtml(job?.original_filename ?? 'Analysis Review');
-    const sourceLink = job?.source_type === 'url' && job.source_url
-      ? `<p class="meta-link">Source: <a href="${escapeHtml(job.source_url)}">${escapeHtml(job.source_url)}</a></p>`
-      : '';
-    const generatedAt = escapeHtml(formatExportTimestamp());
-
-    const summaryHeading = isShowingCustomSummary && hasCustomSummary ? 'Customized Summary' : 'Executive Summary';
-    const summaryDescription = isShowingCustomSummary && customSummaryResult?.instruction
-      ? escapeHtml(customSummaryResult.instruction)
-      : 'This is the default general summary generated from the full transcript.';
-    const summaryBody = escapeHtml(activeSummaryText).replaceAll('\n', '<br />');
-    const sentimentBody = escapeHtml(job?.sentiment ?? 'Sentiment analysis is still pending.');
-    const actionItemsBody = actionItems.length > 0
-      ? actionItems.map((item) => `<li>${escapeHtml(item)}</li>`).join('')
-      : '<li>No action items were extracted from this transcript.</li>';
-    const transcriptBody = transcriptEntries.length > 0
-      ? transcriptEntries.map((entry, index) => {
-          const timestamp = entry.start !== null || entry.end !== null
-            ? `${formatTimestamp(entry.start)} - ${formatTimestamp(entry.end)}`
-            : `Segment ${index + 1}`;
-          return `
-            <article class="transcript-entry">
-              ${showTranscriptTimestamps ? `<div class="timestamp">${escapeHtml(timestamp)}</div>` : ''}
-              <p>${escapeHtml(entry.text).replaceAll('\n', '<br />')}</p>
-            </article>
-          `;
-        }).join('')
-      : '<p class="empty-state">No transcript content matches your search.</p>';
-
-    const exportMarkup = target === 'summary'
-      ? `
-        <section class="section hero">
-          <div class="eyebrow">${escapeHtml(summaryHeading)}</div>
-          ${isShowingCustomSummary && hasCustomSummary ? '<div class="chip">Focused View</div>' : ''}
-          <p class="supporting">${summaryDescription}</p>
-          <div class="summary-body">${summaryBody}</div>
-          ${isShowingCustomSummary && customSummaryResult?.updated_at
-            ? `<div class="updated">Updated ${escapeHtml(formatRelativeTime(customSummaryResult.updated_at))}</div>`
-            : ''}
-        </section>
-        <section class="section compact">
-          <h2>Sentiment</h2>
-          <p>${sentimentBody}</p>
-        </section>
-        <section class="section compact">
-          <h2>Action Items</h2>
-          <ul class="action-list">${actionItemsBody}</ul>
-        </section>
-      `
-      : `
-        <section class="section hero">
-          <div class="eyebrow">Full Transcript</div>
-          <p class="supporting">Exported transcript view${showTranscriptTimestamps ? ' with timestamps' : ''}.</p>
-        </section>
-        <section class="section transcript-section">
-          ${transcriptBody}
-        </section>
-      `;
-
-    const exportDocument = `
-      <!doctype html>
-      <html lang="en">
-        <head>
-          <meta charset="utf-8" />
-          <title>${title} - ${target === 'summary' ? 'Summary' : 'Transcript'}</title>
-          <style>
-            @page {
-              size: A4;
-              margin: 14mm 16mm;
-            }
-
-            * {
-              box-sizing: border-box;
-            }
-
-            html, body {
-              margin: 0;
-              padding: 0;
-              background: #ffffff;
-              color: #111827;
-              font-family: Inter, Arial, sans-serif;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-
-            body {
-              padding: 0;
-            }
-
-            main {
-              width: 100%;
-            }
-
-            .header {
-              margin-bottom: 24px;
-              border-bottom: 1px solid #d4d4d8;
-              padding-bottom: 18px;
-            }
-
-            .breadcrumbs {
-              color: #71717a;
-              font-size: 11px;
-              letter-spacing: 0.18em;
-              margin-bottom: 8px;
-              text-transform: uppercase;
-            }
-
-            h1 {
-              margin: 0;
-              font-size: 28px;
-              line-height: 1.15;
-              color: #111827;
-            }
-
-            .meta-link {
-              margin: 10px 0 0;
-              color: #52525b;
-              font-size: 12px;
-            }
-
-            .meta-link a {
-              color: inherit;
-              text-decoration: none;
-            }
-
-            .generated {
-              margin-top: 10px;
-              color: #71717a;
-              font-size: 12px;
-            }
-
-            .section {
-              width: 100%;
-              margin-bottom: 18px;
-              border: 1px solid #d4d4d8;
-              border-radius: 18px;
-              padding: 18px 20px;
-              break-inside: auto;
-              page-break-inside: auto;
-            }
-
-            .section.hero {
-              border-color: #cbd5e1;
-              background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
-            }
-
-            .eyebrow {
-              color: #52525b;
-              font-size: 11px;
-              font-weight: 700;
-              letter-spacing: 0.22em;
-              margin-bottom: 10px;
-              text-transform: uppercase;
-            }
-
-            .chip {
-              display: inline-block;
-              margin-bottom: 12px;
-              padding: 6px 10px;
-              border: 1px solid #67e8f9;
-              border-radius: 999px;
-              color: #0f766e;
-              font-size: 11px;
-              font-weight: 700;
-              letter-spacing: 0.16em;
-              text-transform: uppercase;
-            }
-
-            .supporting,
-            .updated {
-              color: #52525b;
-              font-size: 13px;
-              line-height: 1.6;
-            }
-
-            .summary-body {
-              margin-top: 16px;
-              font-size: 15px;
-              line-height: 1.8;
-              white-space: normal;
-            }
-
-            h2 {
-              margin: 0 0 12px;
-              color: #3f3f46;
-              font-size: 12px;
-              font-weight: 700;
-              letter-spacing: 0.2em;
-              text-transform: uppercase;
-            }
-
-            p {
-              margin: 0;
-              font-size: 14px;
-              line-height: 1.75;
-            }
-
-            .action-list {
-              margin: 0;
-              padding-left: 20px;
-            }
-
-            .action-list li {
-              margin: 0 0 10px;
-              line-height: 1.7;
-              break-inside: avoid;
-              page-break-inside: avoid;
-            }
-
-            .transcript-section {
-              border: 0;
-              padding: 0;
-              margin: 0;
-            }
-
-            .transcript-entry {
-              margin-bottom: 12px;
-              border: 1px solid #d4d4d8;
-              border-radius: 16px;
-              padding: 14px 16px;
-            }
-
-            .timestamp {
-              margin-bottom: 8px;
-              color: #52525b;
-              font-size: 12px;
-              font-weight: 700;
-              letter-spacing: 0.08em;
-            }
-
-            .empty-state {
-              color: #52525b;
-            }
-          </style>
-        </head>
-        <body>
-          <main>
-            <header class="header">
-              <div class="breadcrumbs">Videos / ${title}</div>
-              <h1>${title}</h1>
-              ${sourceLink}
-              <div class="generated">Exported ${generatedAt}</div>
-            </header>
-            ${exportMarkup}
-          </main>
-        </body>
-      </html>
-    `;
+    setReportMessage(null);
+    setReportError(null);
+    setReportActionLoading(target === 'summary' ? 'summary-export' : 'transcript-export');
 
     try {
-      const iframe = document.createElement('iframe');
-      iframe.setAttribute('aria-hidden', 'true');
-      iframe.style.position = 'fixed';
-      iframe.style.right = '0';
-      iframe.style.bottom = '0';
-      iframe.style.width = '0';
-      iframe.style.height = '0';
-      iframe.style.border = '0';
-      iframe.style.opacity = '0';
-      iframe.style.pointerEvents = 'none';
-
-      const cleanup = () => {
-        window.setTimeout(() => {
-          iframe.remove();
-        }, 500);
-      };
-
-      iframe.onload = () => {
-        const printFrame = iframe.contentWindow;
-        if (!printFrame) {
-          cleanup();
-          setChatError('Unable to render the export preview.');
-          return;
-        }
-
-        const triggerPrint = () => {
-          printFrame.focus();
-          printFrame.print();
-        };
-
-        printFrame.onafterprint = cleanup;
-        window.setTimeout(triggerPrint, 150);
-        window.setTimeout(cleanup, 2000);
-      };
-
-      iframe.srcdoc = exportDocument;
-      document.body.appendChild(iframe);
-    } catch {
-      setChatError('Unable to render the export preview.');
+      const generatedReport = await generateVideoReport(job.id, target, {
+        showTimestamps: target === 'transcript' ? showTranscriptTimestamps : true,
+        useCustomSummary: target === 'summary' ? isShowingCustomSummary : undefined,
+      });
+      const reportBlob = await fetchVideoReportBlob(job.id, target);
+      downloadBlobFile(generatedReport.filename || `${job.original_filename}-${target}.pdf`, reportBlob);
+      await onRefreshJob(job.id).catch(() => undefined);
+      setReportMessage(
+        generatedReport.saved_path
+          ? `${target === 'summary' ? 'Summary' : 'Transcript'} PDF exported and stored at ${generatedReport.saved_path}.`
+          : `${target === 'summary' ? 'Summary' : 'Transcript'} PDF exported successfully.`,
+      );
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Unable to export the PDF');
+    } finally {
+      setReportActionLoading(null);
     }
   }, [
-    actionItems,
-    activeSummaryText,
-    customSummaryResult?.instruction,
-    customSummaryResult?.updated_at,
-    hasCustomSummary,
     isShowingCustomSummary,
+    job?.id,
     job?.original_filename,
-    job?.sentiment,
-    job?.source_type,
-    job?.source_url,
+    onRefreshJob,
     showTranscriptTimestamps,
-    transcriptEntries,
   ]);
+
+  const openEmailModal = useCallback((target: 'summary' | 'transcript') => {
+    setIsSummaryMenuOpen(false);
+    setIsTranscriptMenuOpen(false);
+    setReportMessage(null);
+    setReportError(null);
+    setEmailTarget(target);
+    setEmailRecipient(defaultRecipientEmail);
+    setIsEmailModalOpen(true);
+  }, [defaultRecipientEmail]);
+
+  const handleSendReportEmail = useCallback(async () => {
+    if (!job?.id || reportActionLoading) {
+      return;
+    }
+
+    const normalizedEmail = emailRecipient.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setReportError('Enter a valid email address.');
+      return;
+    }
+
+    setReportMessage(null);
+    setReportError(null);
+    setReportActionLoading(emailTarget === 'summary' ? 'summary-email' : 'transcript-email');
+
+    try {
+      const emailResult = await emailVideoReport(job.id, emailTarget, normalizedEmail, {
+        showTimestamps: emailTarget === 'transcript' ? showTranscriptTimestamps : true,
+        useCustomSummary: emailTarget === 'summary' ? isShowingCustomSummary : undefined,
+      });
+      await onRefreshJob(job.id).catch(() => undefined);
+      setReportMessage(`Email sent to ${emailResult.emailed_to || normalizedEmail}.`);
+      setIsEmailModalOpen(false);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Unable to send the email');
+    } finally {
+      setReportActionLoading(null);
+    }
+  }, [emailRecipient, emailTarget, isShowingCustomSummary, job?.id, onRefreshJob, reportActionLoading, showTranscriptTimestamps]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = chatMessagesContainerRef.current;
@@ -2302,6 +2123,7 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     const existingCustomSummary = job?.custom_summary_text
       ? {
           summary: job.custom_summary_text,
+          action_items: storedCustomActionItems,
           instruction: job.custom_summary_prompt ?? '',
           updated_at: job.custom_summary_updated_at ?? new Date().toISOString(),
         }
@@ -2314,6 +2136,10 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
     setIsSummaryModalOpen(false);
     setIsSummaryMenuOpen(false);
     setIsTranscriptMenuOpen(false);
+    setIsEmailModalOpen(false);
+    setReportMessage(null);
+    setReportError(null);
+    setReportActionLoading(null);
 
     setChatMessages([]);
     setSuggestedQuestions([]);
@@ -2322,7 +2148,7 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
       void loadChatMessages(job.id);
       void loadSuggestions(job.id, []);
     }
-  }, [job?.id, job?.status, job?.transcript, loadChatMessages, loadSuggestions, transcriptSegments.length]);
+  }, [job?.custom_summary_prompt, job?.custom_summary_text, job?.custom_summary_updated_at, job?.id, job?.status, job?.transcript, loadChatMessages, loadSuggestions, storedCustomActionItems, transcriptSegments.length]);
 
   useEffect(() => {
     if (activeTab !== 'chat' || !hasConversation) {
@@ -2390,6 +2216,10 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
       document.removeEventListener('keydown', handleEscape);
     };
   }, [isSummaryMenuOpen, isTranscriptMenuOpen]);
+
+  useEffect(() => {
+    setEmailRecipient(defaultRecipientEmail);
+  }, [defaultRecipientEmail, job?.id]);
 
   return (
     <div
@@ -2515,6 +2345,16 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
           </div>
 
           <div className={`flex-1 p-6 ${activeTab === 'chat' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+            {reportMessage && (
+              <div className="mb-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                {reportMessage}
+              </div>
+            )}
+            {reportError && (
+              <div className="mb-4 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                {reportError}
+              </div>
+            )}
             <AnimatePresence mode="wait">
               {activeTab === 'summary' ? (
                 <motion.div
@@ -2578,13 +2418,19 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    handleExportPDF('summary');
-                                  }}
+                                  onClick={() => void handleExportPDF('summary')}
                                   className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
                                 >
                                   <FileDown size={15} />
-                                  Export PDF
+                                  {reportActionLoading === 'summary-export' ? 'Exporting PDF...' : 'Export PDF'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openEmailModal('summary')}
+                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                                >
+                                  <Send size={15} />
+                                  Send Gmail
                                 </button>
                                 <button
                                   type="button"
@@ -2639,6 +2485,26 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                     {isShowingCustomSummary && customSummaryResult?.updated_at && (
                       <div className="mt-5 text-[11px] uppercase tracking-[0.25em] text-white/35 print:text-zinc-500">
                         Updated {formatRelativeTime(customSummaryResult.updated_at)}
+                      </div>
+                    )}
+
+                    {summaryReportRecord && (
+                      <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-white/65 print:hidden">
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-white/35">
+                          <span>Summary Report</span>
+                          <span className={`${summaryReportRecord.email_status === 'sent' ? 'text-emerald-400' : 'text-white/30'}`}>
+                            {typeof summaryReportRecord.email_status === 'string' ? `Email ${summaryReportRecord.email_status}` : 'PDF saved'}
+                          </span>
+                        </div>
+                        {typeof summaryReportRecord.saved_path === 'string' && (
+                          <p className="mt-2 leading-6">Saved path: <span className="text-white/85">{summaryReportRecord.saved_path}</span></p>
+                        )}
+                        {typeof summaryReportRecord.emailed_to === 'string' && (
+                          <p className="mt-1 leading-6">Last email: <span className="text-white/85">{summaryReportRecord.emailed_to}</span></p>
+                        )}
+                        {typeof summaryReportRecord.email_error === 'string' && summaryReportRecord.email_error && (
+                          <p className="mt-1 leading-6 text-red-300">{summaryReportRecord.email_error}</p>
+                        )}
                       </div>
                     )}
                   </section>
@@ -2718,19 +2584,45 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                handleExportPDF('transcript');
-                              }}
+                              onClick={() => void handleExportPDF('transcript')}
                               className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
                             >
                               <FileDown size={15} />
-                              Export PDF
+                              {reportActionLoading === 'transcript-export' ? 'Exporting PDF...' : 'Export PDF'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openEmailModal('transcript')}
+                              className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+                            >
+                              <Send size={15} />
+                              Send Gmail
                             </button>
                           </motion.div>
                         )}
                       </AnimatePresence>
                     </div>
                   </div>
+
+                  {transcriptReportRecord && (
+                    <div className="mb-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-white/65 print:hidden">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-white/35">
+                        <span>Transcript Report</span>
+                        <span className={`${transcriptReportRecord.email_status === 'sent' ? 'text-emerald-400' : 'text-white/30'}`}>
+                          {typeof transcriptReportRecord.email_status === 'string' ? `Email ${transcriptReportRecord.email_status}` : 'PDF saved'}
+                        </span>
+                      </div>
+                      {typeof transcriptReportRecord.saved_path === 'string' && (
+                        <p className="mt-2 leading-6">Saved path: <span className="text-white/85">{transcriptReportRecord.saved_path}</span></p>
+                      )}
+                      {typeof transcriptReportRecord.emailed_to === 'string' && (
+                        <p className="mt-1 leading-6">Last email: <span className="text-white/85">{transcriptReportRecord.emailed_to}</span></p>
+                      )}
+                      {typeof transcriptReportRecord.email_error === 'string' && transcriptReportRecord.email_error && (
+                        <p className="mt-1 leading-6 text-red-300">{transcriptReportRecord.email_error}</p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="space-y-6">
                     {transcriptEntries.length > 0 ? transcriptEntries.map((entry, i) => (
@@ -3070,6 +2962,141 @@ const ReviewScreen = ({ job }: { job: VideoJob | null }) => {
           </div>
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {isEmailModalOpen && (
+          <div className="fixed inset-0 z-[121] flex items-center justify-center p-6">
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!reportActionLoading) {
+                  setIsEmailModalOpen(false);
+                }
+              }}
+              className="absolute inset-0 bg-midnight/85 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 16 }}
+              className="glass-panel relative z-10 w-full max-w-xl overflow-hidden p-6"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (!reportActionLoading) {
+                    setIsEmailModalOpen(false);
+                  }
+                }}
+                className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/60 transition-colors hover:bg-white/20 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.3em] text-neon-cyan">Send Gmail</p>
+                  <h3 className="mt-2 text-2xl font-bold">
+                    Send the {emailTarget === 'summary' ? 'summary' : 'transcript'} report
+                  </h3>
+                  <p className="mt-3 text-sm leading-relaxed text-white/55">
+                    PathomAI will generate the latest PDF, keep it in managed storage, and send it as an email attachment.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-[0.24em] text-white/40">Recipient Email</label>
+                  <input
+                    type="email"
+                    value={emailRecipient}
+                    onChange={(event) => setEmailRecipient(event.target.value)}
+                    placeholder="recipient@example.com"
+                    className="w-full rounded-3xl border border-white/10 bg-white/5 px-5 py-4 text-sm text-white placeholder:text-white/30 focus:border-neon-cyan/50 focus:outline-none"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm leading-6 text-white/55">
+                  <p>The attachment uses the current {emailTarget === 'summary' ? 'summary' : 'transcript'} view.</p>
+                  {emailTarget === 'transcript' && (
+                    <p>{showTranscriptTimestamps ? 'Timestamps are included in the transcript PDF.' : 'Timestamps are currently hidden and will stay hidden in the transcript PDF.'}</p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <Button
+                    variant="secondary"
+                    className="rounded-2xl px-5 py-3"
+                    onClick={() => setIsEmailModalOpen(false)}
+                    disabled={Boolean(reportActionLoading)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="neon"
+                    className="rounded-2xl px-5 py-3"
+                    onClick={() => void handleSendReportEmail()}
+                    disabled={Boolean(reportActionLoading)}
+                  >
+                    {reportActionLoading === `${emailTarget}-email` ? 'Sending...' : 'Send Gmail'}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+const DocCodeCard = ({
+  label,
+  title,
+  description,
+  code,
+  copyable = false,
+}: {
+  label: string;
+  title: string;
+  description?: string;
+  code: string;
+  copyable?: boolean;
+}) => {
+  const [copiedState, setCopiedState] = useState(false);
+
+  const handleCopyCode = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedState(true);
+      window.setTimeout(() => setCopiedState(false), 1800);
+    } catch {
+      setCopiedState(false);
+    }
+  }, [code]);
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-3xl border border-white/10 bg-[#07131d]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-neon-cyan">{label}</div>
+          <div className="mt-1 text-sm font-semibold text-white">{title}</div>
+          {description && <p className="mt-2 text-sm leading-6 text-white/45">{description}</p>}
+        </div>
+        {copyable && (
+          <button
+            type="button"
+            onClick={() => void handleCopyCode()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-white/70 transition-colors hover:border-neon-cyan/40 hover:text-white"
+          >
+            <ClipboardCopy size={14} />
+            {copiedState ? 'Copied' : 'Copy'}
+          </button>
+        )}
+      </div>
+      <pre className="overflow-x-auto whitespace-pre-wrap break-words px-5 py-5 text-sm leading-7 text-white/75">{code}</pre>
     </div>
   );
 };
@@ -3096,16 +3123,6 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
     '  -H "X-API-Key: pat_your_generated_api_key"',
   ].join('\n');
 
-  const uploadExample = [
-    `curl -X POST "${apiBaseUrl}/videos/import" \\`,
-    '  -H "Content-Type: application/json" \\',
-    '  -H "X-API-Key: pat_your_generated_api_key" \\',
-    '  -d \'{',
-    '    "video_url": "https://example.com/meeting.mp4",',
-    '    "language_hint": "auto"',
-    "  }'",
-  ].join('\n');
-
   const pythonExample = [
     'import requests',
     '',
@@ -3129,14 +3146,15 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
   ].join('\n');
 
   const isWindows = tutorialPlatform === 'windows';
-  const codeBlockClass = 'overflow-x-auto whitespace-pre-wrap break-words rounded-3xl border border-white/10 bg-[#07131d] p-5 text-sm leading-7 text-white/75';
   const endpointCards = [
     { id: 'auth', method: 'HEADER', path: 'X-API-Key', description: 'Send this header on every request.' },
     { id: 'list', method: 'GET', path: '/api/videos', description: 'List all jobs in the workspace.' },
     { id: 'view', method: 'GET', path: '/api/videos/{job_id}', description: 'View one job with transcript and summary.' },
     { id: 'source', method: 'GET', path: '/api/videos/{job_id}/source', description: 'Download or stream the original source video.' },
-    { id: 'upload', method: 'POST', path: '/api/videos/upload', description: 'Upload a local file using multipart form-data.' },
-    { id: 'import', method: 'POST', path: '/api/videos/import', description: 'Import from YouTube, Google Drive, or public video URLs.' },
+    { id: 'upload', method: 'POST', path: '/api/videos/upload', description: 'Upload a local file using multipart form-data. Optional email/PDF delivery works here too.' },
+    { id: 'import', method: 'POST', path: '/api/videos/transcribe', description: 'Import from YouTube, Google Drive, or public video URLs. YouTube and Drive use the same endpoint.' },
+    { id: 'report-download', method: 'GET', path: '/api/videos/{job_id}/reports/{target}', description: 'Download a stored summary or transcript PDF.' },
+    { id: 'report-email', method: 'POST', path: '/api/videos/{job_id}/reports/{target}/email', description: 'Generate the report and send it by Gmail.' },
     { id: 'chat', method: 'POST', path: '/api/videos/{job_id}/chat', description: 'Ask questions about the processed video.' },
     { id: 'messages', method: 'GET', path: '/api/videos/{job_id}/chat/messages', description: 'Read saved chat history.' },
     { id: 'suggestions', method: 'POST', path: '/api/videos/{job_id}/chat/suggestions', description: 'Generate suggested follow-up questions.' },
@@ -3156,20 +3174,38 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
     ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '', `Invoke-WebRequest -Method Get -Uri "${apiBaseUrl}/videos/$jobId/source" -Headers $headers -OutFile ".\\meeting.mp4"`].join('\n')
     : ['JOB_ID="job_123"', '', `curl -L "${apiBaseUrl}/videos/$JOB_ID/source" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -o ./meeting.mp4'].join('\n');
   const uploadLocalExample = isWindows
-    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$form = @{', '  file = Get-Item ".\\Weekly Meeting Example.mp4"', '  language_hint = "auto"', '}', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/upload" -Headers $headers -Form $form`].join('\n')
-    : [`curl -X POST "${apiBaseUrl}/videos/upload" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -F "file=@./Weekly Meeting Example.mp4" \\', '  -F "language_hint=auto"'].join('\n');
+    ? [`curl.exe -X POST "${apiBaseUrl}/videos/upload" \``, '  -H "X-API-Key: pat_your_generated_api_key" `', '  -F "file=@C:\\Users\\zoen\\Downloads\\Weekly Meeting Example.mp4;type=video/mp4" `', '  -F "language_hint=auto" `', '  -F "notify_email=recipient@example.com" `', '  -F "export_pdf=true" `', '  -F "export_pdf_path=C:\\Users\\zoen\\Downloads\\weekly-meeting-summary.pdf"'].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/upload" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -F "file=@./Weekly Meeting Example.mp4;type=video/mp4" \\', '  -F "language_hint=auto" \\', '  -F "notify_email=recipient@example.com" \\', '  -F "export_pdf=true" \\', '  -F "export_pdf_path=reports/meeting-summary.pdf"'].join('\n');
+  const uploadPathExample = isWindows
+    ? [`curl.exe -X POST "${apiBaseUrl}/videos/upload" \``, '  -H "X-API-Key: pat_your_generated_api_key" `', '  -F "file_path=C:\\Users\\zoen\\Downloads\\Weekly Meeting Example.mp4" `', '  -F "language_hint=auto" `', '  -F "export_pdf=true" `', '  -F "export_pdf_path=C:\\Users\\zoen\\Downloads\\weekly-meeting-summary.pdf"'].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/upload" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -F "file_path=/mnt/c/Users/zoen/Downloads/Weekly Meeting Example.mp4" \\', '  -F "language_hint=auto" \\', '  -F "export_pdf=true" \\', '  -F "export_pdf_path=/mnt/c/Users/zoen/Downloads/weekly-meeting-summary.pdf"'].join('\n');
   const importYoutubeExample = isWindows
-    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$body = @{', '  video_url = "https://www.youtube.com/watch?v=abc123xyz"', '  language_hint = "auto"', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/import" -Headers $headers -Body $body`].join('\n')
-    : [`curl -X POST "${apiBaseUrl}/videos/import" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "video_url": "https://www.youtube.com/watch?v=abc123xyz",', '    "language_hint": "auto"', "  }'"].join('\n');
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$body = @{', '  video_url = "https://www.youtube.com/watch?v=abc123xyz"', '  language_hint = "auto"', '  notify_email = "recipient@example.com"', '  export_pdf = $true', '  export_pdf_path = "reports\\\\meeting-summary.pdf"', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/transcribe" -Headers $headers -Body $body`].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/transcribe" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "video_url": "https://www.youtube.com/watch?v=abc123xyz",', '    "language_hint": "auto",', '    "notify_email": "recipient@example.com",', '    "export_pdf": true,', '    "export_pdf_path": "reports/meeting-summary.pdf"', "  }'"].join('\n');
   const importDriveExample = isWindows
-    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$body = @{', '  video_url = "https://drive.google.com/file/d/FILE_ID/view?usp=sharing"', '  language_hint = "auto"', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/import" -Headers $headers -Body $body`].join('\n')
-    : [`curl -X POST "${apiBaseUrl}/videos/import" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "video_url": "https://drive.google.com/file/d/FILE_ID/view?usp=sharing",', '    "language_hint": "auto"', "  }'"].join('\n');
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$body = @{', '  video_url = "https://drive.google.com/file/d/FILE_ID/view?usp=sharing"', '  language_hint = "auto"', '  notify_email = "recipient@example.com"', '  export_pdf = $true', '  export_pdf_path = "reports\\\\meeting-summary.pdf"', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/transcribe" -Headers $headers -Body $body`].join('\n')
+    : [`curl -X POST "${apiBaseUrl}/videos/transcribe" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "video_url": "https://drive.google.com/file/d/FILE_ID/view?usp=sharing",', '    "language_hint": "auto",', '    "notify_email": "recipient@example.com",', '    "export_pdf": true,', '    "export_pdf_path": "reports/meeting-summary.pdf"', "  }'"].join('\n');
   const chatGuideExample = isWindows
     ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$body = @{', '  question = "What decisions were made?"', '  chat_history = @(', '    @{ role = "user"; content = "What happened around 01:10?" }', '  )', '} | ConvertTo-Json -Depth 5', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/chat" -Headers $headers -Body $body`].join('\n')
     : ['JOB_ID="job_123"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/chat" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "question": "What decisions were made?",', '    "chat_history": [', '      { "role": "user", "content": "What happened around 01:10?" }', '    ]', "  }'"].join('\n');
   const summaryGuideExample = isWindows
     ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$body = @{', '  instruction = "Focus only on student attendance risks and next steps."', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/summary/regenerate" -Headers $headers -Body $body`].join('\n')
     : ['JOB_ID="job_123"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/summary/regenerate" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "instruction": "Focus only on student attendance risks and next steps."', "  }'"].join('\n');
+  const messagesExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '', `Invoke-RestMethod -Method Get -Uri "${apiBaseUrl}/videos/$jobId/chat/messages" -Headers $headers`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -X GET "${apiBaseUrl}/videos/$JOB_ID/chat/messages" \\`, '  -H "X-API-Key: pat_your_generated_api_key"'].join('\n');
+  const suggestionsExample = isWindows
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$body = @{', '  asked_questions = @("What decisions were made?")', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/chat/suggestions" -Headers $headers -Body $body`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/chat/suggestions" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "asked_questions": ["What decisions were made?"]', "  }'"].join('\n');
+  const retryCommandExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/retry" -Headers $headers`].join('\n')
+    : ['JOB_ID="job_123"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/retry" \\`, '  -H "X-API-Key: pat_your_generated_api_key"'].join('\n');
+  const reportDownloadExample = isWindows
+    ? ['$headers = @{', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$target = "summary"', '', `Invoke-WebRequest -Method Get -Uri "${apiBaseUrl}/videos/$jobId/reports/$target" -Headers $headers -OutFile ".\\summary-report.pdf"`].join('\n')
+    : ['JOB_ID="job_123"', 'TARGET="summary"', '', `curl -L "${apiBaseUrl}/videos/$JOB_ID/reports/$TARGET" \\`, '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -o ./summary-report.pdf'].join('\n');
+  const reportEmailExample = isWindows
+    ? ['$headers = @{', '  "Content-Type" = "application/json"', '  "X-API-Key" = "pat_your_generated_api_key"', '}', '$jobId = "job_123"', '$target = "transcript"', '$body = @{', '  recipient_email = "recipient@example.com"', '  show_timestamps = $true', '} | ConvertTo-Json', '', `Invoke-RestMethod -Method Post -Uri "${apiBaseUrl}/videos/$jobId/reports/$target/email" -Headers $headers -Body $body`].join('\n')
+    : ['JOB_ID="job_123"', 'TARGET="transcript"', '', `curl -X POST "${apiBaseUrl}/videos/$JOB_ID/reports/$TARGET/email" \\`, '  -H "Content-Type: application/json" \\', '  -H "X-API-Key: pat_your_generated_api_key" \\', '  -d \'{', '    "recipient_email": "recipient@example.com",', '    "show_timestamps": true', "  }'"].join('\n');
 
   return (
     <div className="min-h-screen bg-midnight text-white">
@@ -3226,7 +3262,13 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
                     </button>
                   </div>
                 </div>
-                <pre className={codeBlockClass}>{authExample}</pre>
+                <DocCodeCard
+                  label="Command"
+                  title={isWindows ? 'PowerShell header setup' : 'Linux/macOS shell setup'}
+                  description="Replace the placeholder API key with the real key you generated in Settings."
+                  code={authExample}
+                  copyable
+                />
               </div>
             </div>
 
@@ -3237,8 +3279,17 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">List videos</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">Returns every job in the current workspace so you can select a job ID for later view, source, chat, or summary actions.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{listExample}</pre>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`[
+              <DocCodeCard
+                label="Command"
+                title="List all jobs"
+                description="Run this first to get a valid job ID for the later commands."
+                code={listExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Successful JSON result"
+                code={`[
   {
     "id": "job_123",
     "original_filename": "weekly-meeting.mp4",
@@ -3250,7 +3301,8 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
       "Share low-cost child-care resources"
     ]
   }
-]`}</pre>
+]`}
+              />
             </div>
 
             <div id="view" className="glass-panel scroll-mt-24 p-8">
@@ -3260,8 +3312,17 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">View one processed video</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">Returns the full job record including summary, transcript, transcript segments, sentiment, action items, and custom summary data.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{viewExample}</pre>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+              <DocCodeCard
+                label="Command"
+                title="Get one job"
+                description="Replace `job_123` with the job ID you want to inspect."
+                code={viewExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Detailed job payload"
+                code={`{
   "id": "job_123",
   "status": "completed",
   "summary": "The team discussed John Smith's attendance and family support needs.",
@@ -3270,8 +3331,19 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
   "action_items": [
     "Coordinate with the guidance counselor",
     "Locate community child-care resources"
-  ]
-}`}</pre>
+  ],
+  "video_metadata": {
+    "reports": {
+      "summary": {
+        "status": "saved",
+        "saved_path": "reports/meeting-summary.pdf",
+        "email_status": "sent",
+        "emailed_to": "recipient@example.com"
+      }
+    }
+  }
+}`}
+              />
             </div>
 
             <div id="source" className="glass-panel scroll-mt-24 p-8">
@@ -3281,7 +3353,13 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">View or download the original source</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">This returns the actual video file stream. Use it to download the original upload or play it in another client.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{sourceExample}</pre>
+              <DocCodeCard
+                label="Command"
+                title="Download the original video"
+                description="This writes the video to your own machine. Change the output filename if you want."
+                code={sourceExample}
+                copyable
+              />
             </div>
 
             <div id="upload" className="glass-panel scroll-mt-24 p-8">
@@ -3290,37 +3368,146 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
                 <code className="text-sm text-white/80">/api/videos/upload</code>
               </div>
               <h3 className="mt-4 text-2xl font-bold">Upload a local file</h3>
-              <p className="mt-3 text-sm leading-7 text-white/60">Use multipart form-data with a local file and optional <code className="rounded bg-white/10 px-2 py-1 text-white">language_hint</code> of <code className="rounded bg-white/10 px-2 py-1 text-white">auto</code>, <code className="rounded bg-white/10 px-2 py-1 text-white">en</code>, or <code className="rounded bg-white/10 px-2 py-1 text-white">tl</code>.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{uploadLocalExample}</pre>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
-  "id": "job_123",
+              <p className="mt-3 text-sm leading-7 text-white/60">Use multipart form-data with either <code className="rounded bg-white/10 px-2 py-1 text-white">file</code> for normal upload bytes or <code className="rounded bg-white/10 px-2 py-1 text-white">file_path</code> when the backend is on the same machine and the path is inside the mounted Windows/WSL/Linux bridge roots. Optional delivery fields work here too: <code className="rounded bg-white/10 px-2 py-1 text-white">notify_email</code>, <code className="rounded bg-white/10 px-2 py-1 text-white">export_pdf</code>, and <code className="rounded bg-white/10 px-2 py-1 text-white">export_pdf_path</code>.</p>
+              <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-7 text-amber-100/90">
+                <span className="font-semibold text-white">Practical rule:</span> use <code className="rounded bg-black/20 px-2 py-1 text-white">file=@...</code> when you want the client to upload the bytes normally. Use <code className="rounded bg-black/20 px-2 py-1 text-white">file_path=...</code> only when the backend can directly read that host path through the configured bridge mounts. On Windows, the multipart examples use <code className="rounded bg-black/20 px-2 py-1 text-white">curl.exe</code> because older PowerShell versions do not support <code className="rounded bg-black/20 px-2 py-1 text-white">Invoke-RestMethod -Form</code>.
+              </div>
+              <DocCodeCard
+                label="Command"
+                title="Upload a local file"
+                description="This sends the actual file bytes in the request. Use it when the API could be remote or when you just want the most reliable option. Replace the file path, API key, and optional delivery fields as needed."
+                code={uploadLocalExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Command"
+                title="Upload by absolute file_path"
+                description="This sends only the path string. Use it when the backend is running on the same machine and can see that path through the Docker bridge mounts. It is convenient for local automation, but more environment-sensitive than `file=@...`."
+                code={uploadPathExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Queued upload response"
+                code={`{
+    "id": "job_123",
   "status": "queued",
-  "message": "Video upload accepted and queued for processing"
-}`}</pre>
+  "message": "Video upload accepted for processing",
+  "notify_email": "recipient@example.com",
+    "export_pdf": true,
+    "export_pdf_path": "reports/meeting-summary.pdf"
+  }`}
+              />
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-white/40">Common Upload Errors</div>
+                <div className="mt-4 space-y-4 text-sm leading-7 text-white/65">
+                  <div>
+                    <div className="font-semibold text-white">`A parameter cannot be found that matches parameter name 'Form'`</div>
+                    <p className="mt-1">You are likely on an older Windows PowerShell version. Use <code className="rounded bg-white/10 px-2 py-1 text-white">curl.exe</code> for multipart upload instead of <code className="rounded bg-white/10 px-2 py-1 text-white">Invoke-RestMethod -Form</code>.</p>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-white">`Only video uploads are supported`</div>
+                    <p className="mt-1">Some curl clients send multipart files as generic binary. Use a video extension such as <code className="rounded bg-white/10 px-2 py-1 text-white">.mp4</code>, and prefer <code className="rounded bg-white/10 px-2 py-1 text-white">;type=video/mp4</code> on the <code className="rounded bg-white/10 px-2 py-1 text-white">file=@...</code> field when possible.</p>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-white">`The file_path does not exist from the server&apos;s point of view`</div>
+                    <p className="mt-1">The backend cannot see that absolute path. Check that Docker was rebuilt with the host bridge mounts, and only use <code className="rounded bg-white/10 px-2 py-1 text-white">file_path</code> for paths inside the configured Windows, WSL, or Linux bridge roots.</p>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-white">`Provide exactly one of file or file_path`</div>
+                    <p className="mt-1">Send either <code className="rounded bg-white/10 px-2 py-1 text-white">file=@...</code> or <code className="rounded bg-white/10 px-2 py-1 text-white">file_path=...</code>, not both in the same request.</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div id="import" className="glass-panel scroll-mt-24 p-8">
               <div className="flex items-center gap-3">
                 <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
-                <code className="text-sm text-white/80">/api/videos/import</code>
+                <code className="text-sm text-white/80">/api/videos/transcribe</code>
               </div>
               <h3 className="mt-4 text-2xl font-bold">Import from YouTube, Google Drive, or a public video URL</h3>
-              <p className="mt-3 text-sm leading-7 text-white/60">The backend downloads the source first, then runs the normal analysis pipeline. Use a public YouTube URL, a valid public Google Drive share link, or a direct public video file URL.</p>
+              <p className="mt-3 text-sm leading-7 text-white/60">The backend downloads the source first, then runs the normal analysis pipeline. YouTube, Google Drive, and direct file URLs all use this same endpoint. The only required difference is the <code className="rounded bg-white/10 px-2 py-1 text-white">video_url</code> value. Optional delivery fields work here too.</p>
               <div className="mt-4 grid gap-4 xl:grid-cols-2">
                 <div>
                   <div className="mb-3 text-sm font-semibold text-white">YouTube or public URL</div>
-                  <pre className={codeBlockClass}>{importYoutubeExample}</pre>
+                  <DocCodeCard
+                    label="Command"
+                    title="YouTube or direct public video URL"
+                    description="Replace the URL and API key. Keep `language_hint` as `auto` unless you want to force `en` or `tl`."
+                    code={importYoutubeExample}
+                    copyable
+                  />
                 </div>
                 <div>
                   <div className="mb-3 text-sm font-semibold text-white">Google Drive share link</div>
-                  <pre className={codeBlockClass}>{importDriveExample}</pre>
+                  <DocCodeCard
+                    label="Command"
+                    title="Google Drive share link"
+                    description="Same endpoint, same JSON shape. The difference is only the Drive file URL. The optional `notify_email`, `export_pdf`, and `export_pdf_path` fields can be removed if you do not need them."
+                    code={importDriveExample}
+                    copyable
+                  />
                 </div>
               </div>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+              <DocCodeCard
+                label="Example Response"
+                title="Queued import response"
+                code={`{
   "id": "job_456",
   "status": "queued",
-  "message": "Video import accepted and queued for processing"
-}`}</pre>
+  "message": "Video URL accepted for processing",
+  "notify_email": "recipient@example.com",
+  "export_pdf": true,
+  "export_pdf_path": "reports/meeting-summary.pdf"
+}`}
+              />
+            </div>
+
+            <div id="report-download" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">GET</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/reports/{"{target}"}</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Download a stored PDF report</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">Use <code className="rounded bg-white/10 px-2 py-1 text-white">summary</code> or <code className="rounded bg-white/10 px-2 py-1 text-white">transcript</code> as the target. This is the clean way to save the generated PDF on the curl machine with <code className="rounded bg-white/10 px-2 py-1 text-white">-o</code> or <code className="rounded bg-white/10 px-2 py-1 text-white">-OutFile</code>.</p>
+              <DocCodeCard
+                label="Command"
+                title="Download the stored PDF"
+                description="Replace the job ID and choose `summary` or `transcript`."
+                code={reportDownloadExample}
+                copyable
+              />
+            </div>
+
+            <div id="report-email" className="glass-panel scroll-mt-24 p-8">
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-sky-300">POST</span>
+                <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/reports/{"{target}"}/email</code>
+              </div>
+              <h3 className="mt-4 text-2xl font-bold">Send a summary or transcript PDF by Gmail</h3>
+              <p className="mt-3 text-sm leading-7 text-white/60">This generates the current report, stores it in managed storage, and emails it as a PDF attachment. For transcript reports, <code className="rounded bg-white/10 px-2 py-1 text-white">show_timestamps</code> is optional.</p>
+              <DocCodeCard
+                label="Command"
+                title="Email a report"
+                description="Replace the job ID, target, recipient email, and API key. `show_timestamps` only matters for transcript reports."
+                code={reportEmailExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Successful email response"
+                code={`{
+  "target": "transcript",
+  "message": "Transcript report emailed successfully",
+  "saved_path": "transcript/weekly-meeting-transcript.pdf",
+  "storage_path": "r2://fathom-videos/videos/tenant/job/reports/transcript/weekly-meeting-transcript.pdf",
+  "filename": "weekly-meeting-transcript.pdf",
+  "email_status": "sent",
+  "emailed_to": "recipient@example.com",
+  "generated_at": "2026-03-17T04:15:19Z"
+}`}
+              />
             </div>
 
             <div id="chat" className="glass-panel scroll-mt-24 p-8">
@@ -3330,14 +3517,24 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">Ask questions about a video</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">Pass the current question and optionally include prior messages in <code className="rounded bg-white/10 px-2 py-1 text-white">chat_history</code> to keep context.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{chatGuideExample}</pre>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+              <DocCodeCard
+                label="Command"
+                title="Ask a chat question"
+                description="Replace the job ID and question. `chat_history` is optional but useful for continuity."
+                code={chatGuideExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Answer plus suggested follow-ups"
+                code={`{
   "answer": "John Smith was discussed because he had already missed seven days by November.",
   "suggested_questions": [
     "What support was suggested for John Smith?",
     "Who volunteered to follow up with the family?"
   ]
-}`}</pre>
+}`}
+              />
             </div>
 
             <div id="summary" className="glass-panel scroll-mt-24 p-8">
@@ -3346,13 +3543,27 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
                 <code className="text-sm text-white/80">/api/videos/{"{job_id}"}/summary/regenerate</code>
               </div>
               <h3 className="mt-4 text-2xl font-bold">Generate a focused summary</h3>
-              <p className="mt-3 text-sm leading-7 text-white/60">Use this when the default summary is too broad and you want a custom instruction. This updates the custom summary fields only.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{summaryGuideExample}</pre>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+              <p className="mt-3 text-sm leading-7 text-white/60">Use this when the default summary is too broad and you want a custom instruction. The response includes a focused summary plus focused action items for that instruction.</p>
+              <DocCodeCard
+                label="Command"
+                title="Generate a focused summary"
+                description="Replace the job ID and write the exact instruction you want the AI to follow."
+                code={summaryGuideExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Focused summary result"
+                code={`{
   "summary": "John Smith is at attendance risk and needs family support follow-up.",
+  "action_items": [
+    "Coordinate guidance follow-up for John Smith",
+    "Collect community child-care resources for the family"
+  ],
   "instruction": "Focus only on student attendance risks and next steps.",
   "updated_at": "2026-03-13T09:31:44Z"
-}`}</pre>
+}`}
+              />
             </div>
 
             <div id="messages" className="glass-panel scroll-mt-24 p-8">
@@ -3362,7 +3573,17 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">Read saved chat messages</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">Use this to rebuild the conversation thread in your own client or external dashboard.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`[
+              <DocCodeCard
+                label="Command"
+                title="Read message history"
+                description="Replace the job ID with a completed job that already has chat messages."
+                code={messagesExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Saved message history"
+                code={`[
   {
     "id": "msg_001",
     "role": "user",
@@ -3375,7 +3596,8 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
     "content": "The team agreed to connect John Smith with support resources.",
     "created_at": "2026-03-13T09:24:11Z"
   }
-]`}</pre>
+]`}
+              />
             </div>
 
             <div id="suggestions" className="glass-panel scroll-mt-24 p-8">
@@ -3385,13 +3607,24 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">Generate suggested follow-up questions</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">Useful when you want the app to suggest the next questions the user could ask.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+              <DocCodeCard
+                label="Command"
+                title="Generate suggested questions"
+                description="`asked_questions` is optional. Include it to avoid duplicate suggestions."
+                code={suggestionsExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Suggested questions"
+                code={`{
   "suggested_questions": [
     "What action items were assigned?",
     "What student support concerns came up most often?",
     "Was there a timeline for the follow-up?"
   ]
-}`}</pre>
+}`}
+              />
             </div>
 
             <div id="retry" className="glass-panel scroll-mt-24 p-8">
@@ -3401,15 +3634,47 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
               </div>
               <h3 className="mt-4 text-2xl font-bold">Retry a job</h3>
               <p className="mt-3 text-sm leading-7 text-white/60">Retries processing for a failed or incomplete job and places it back into the queue.</p>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+              <DocCodeCard
+                label="Command"
+                title="Retry a failed job"
+                description="Only failed jobs can be retried."
+                code={retryCommandExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Retry response"
+                code={`{
   "id": "job_123",
   "status": "queued",
   "message": "Video queued for retry"
-}`}</pre>
+}`}
+              />
             </div>
           </section>
 
           <section className="space-y-6">
+            <div className="glass-panel p-8">
+              <h2 className="text-xl font-bold">Other Client Examples</h2>
+              <p className="mt-3 text-sm leading-7 text-white/60">
+                If you are not using curl or PowerShell, these examples show the same API key flow in Python and modern JavaScript.
+              </p>
+              <DocCodeCard
+                label="Command"
+                title="Python requests example"
+                description="Replace the API key, then run this script to list videos."
+                code={pythonExample}
+                copyable
+              />
+              <DocCodeCard
+                label="Command"
+                title="Node fetch example"
+                description="Replace the API key, then run this in a Node environment with `fetch` available."
+                code={nodeExample}
+                copyable
+              />
+            </div>
+
             <div className="glass-panel p-8">
               <h2 className="text-xl font-bold">Available Endpoints</h2>
               <div className="mt-5 space-y-3 text-sm text-white/65">
@@ -3433,19 +3698,39 @@ const ApiGuideScreen = ({ user }: { user: UserProfile | null }) => {
 
             <div className="glass-panel p-8">
               <h2 className="text-xl font-bold">Sample Format</h2>
-              <pre className={`mt-5 ${codeBlockClass}`}>{`POST /api/videos/import
+              <p className="mt-3 text-sm leading-7 text-white/60">
+                Fast way to read the examples:
+                replace the API key, job ID, file path, URL, and recipient email. Remove optional fields entirely if you do not need them.
+              </p>
+              <DocCodeCard
+                label="Command"
+                title="Full transcribe request with optional delivery"
+                description="This is the same for YouTube, Google Drive, and direct public video URLs. Only the `video_url` changes."
+                code={`POST /api/videos/transcribe
 Content-Type: application/json
 X-API-Key: pat_your_generated_api_key
 
 {
   "video_url": "https://www.youtube.com/watch?v=abc123xyz",
-  "language_hint": "auto"
-}`}</pre>
-              <pre className={`mt-4 ${codeBlockClass}`}>{`{
+  "language_hint": "auto",
+  "notify_email": "recipient@example.com",
+  "export_pdf": true,
+  "export_pdf_path": "reports/meeting-summary.pdf"
+}`}
+                copyable
+              />
+              <DocCodeCard
+                label="Example Response"
+                title="Queued job acknowledgement"
+                code={`{
   "id": "job_123",
   "status": "queued",
-  "message": "Video import accepted and queued for processing"
-}`}</pre>
+  "message": "Video URL accepted for processing",
+  "notify_email": "recipient@example.com",
+  "export_pdf": true,
+  "export_pdf_path": "reports/meeting-summary.pdf"
+}`}
+              />
             </div>
 
             <div className="glass-panel p-8">
@@ -3454,6 +3739,8 @@ X-API-Key: pat_your_generated_api_key
                 <p><span className="font-semibold text-white">401</span> means the API key is missing, invalid, or revoked.</p>
                 <p><span className="font-semibold text-white">404</span> means the job does not exist in your workspace.</p>
                 <p><span className="font-semibold text-white">422</span> means the request body failed validation.</p>
+                <p><span className="font-semibold text-white">file_path</span> works only when the backend can actually see that host path through the configured bridge mounts.</p>
+                <p><span className="font-semibold text-white">export_pdf_path</span> can be a logical managed-storage path or an absolute Windows, WSL, or Linux path under the configured bridge roots.</p>
                 <p><span className="font-semibold text-white">Upload</span> is for local files. <span className="font-semibold text-white">Import</span> is for YouTube, Google Drive, and other public URLs.</p>
                 <p><span className="font-semibold text-white">Source</span> returns the original video stream, not JSON.</p>
                 <p><span className="font-semibold text-white">Google Drive</span> links must be public file-share links, not folder links.</p>
@@ -3836,6 +4123,13 @@ export default function App() {
     setCurrentScreen('analysis');
   }, [loadJobs]);
 
+  const handleRefreshSelectedJob = useCallback(async (jobId: string) => {
+    const refreshedJob = await fetchVideoJob(jobId);
+    setSelectedJob(refreshedJob);
+    setActiveJobId(refreshedJob.id);
+    await loadJobs();
+  }, [loadJobs]);
+
   if (isAuthInitializing) {
     return (
       <div className="min-h-screen bg-midnight text-white flex items-center justify-center">
@@ -3901,7 +4195,11 @@ export default function App() {
       case 'review':
         return (
           <DashboardLayout activeTab="dashboard" onNavigate={setCurrentScreen} user={user} onLogout={handleLogout}>
-            <ReviewScreen job={selectedJob} />
+            <ReviewScreen
+              job={selectedJob}
+              defaultRecipientEmail={user?.email || ''}
+              onRefreshJob={handleRefreshSelectedJob}
+            />
           </DashboardLayout>
         );
       default:

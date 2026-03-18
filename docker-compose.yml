@@ -37,6 +37,10 @@ services:
     container_name: pathomai-main-app
     env_file:
       - ./.env
+    volumes:
+      - ./exports:/app/backend/storage/exports
+      - ${HOST_BRIDGE_WINDOWS_ROOT:-/mnt/c/Users}:${HOST_MOUNT_WINDOWS_ROOT:-/host/windows}
+      - ${HOST_BRIDGE_LINUX_ROOT:-/home}:${HOST_MOUNT_LINUX_ROOT:-/host/linux}
     depends_on:
       db:
         condition: service_healthy

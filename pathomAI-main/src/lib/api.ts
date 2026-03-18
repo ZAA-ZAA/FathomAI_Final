@@ -92,6 +92,15 @@ export interface UploadVideoResponse {
   id: string;
   status: VideoJobStatus;
   message: string;
+  notify_email?: string | null;
+  export_pdf?: boolean;
+  export_pdf_path?: string | null;
+}
+
+export interface UploadDeliveryOptions {
+  notifyEmail?: string;
+  exportPdf?: boolean;
+  exportPdfPath?: string;
 }
 
 export interface VideoChatMessage {
@@ -112,8 +121,20 @@ export interface VideoChatSuggestionResponse {
 
 export interface CustomSummaryResponse {
   summary: string;
+  action_items: string[];
   instruction: string;
   updated_at: string;
+}
+
+export interface VideoReportResponse {
+  target: 'summary' | 'transcript';
+  message: string;
+  saved_path?: string | null;
+  storage_path?: string | null;
+  filename?: string | null;
+  email_status?: string | null;
+  emailed_to?: string | null;
+  generated_at?: string | null;
 }
 
 const AUTH_TOKEN_KEY = 'pathomai_auth_token';
@@ -283,10 +304,20 @@ export async function retryVideoJob(jobId: string): Promise<UploadVideoResponse>
 export async function uploadVideo(
   file: File,
   languageHint: 'auto' | 'en' | 'tl' = 'auto',
+  deliveryOptions: UploadDeliveryOptions = {},
 ): Promise<UploadVideoResponse> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('language_hint', languageHint);
+  if (deliveryOptions.notifyEmail?.trim()) {
+    formData.append('notify_email', deliveryOptions.notifyEmail.trim());
+  }
+  if (deliveryOptions.exportPdf) {
+    formData.append('export_pdf', 'true');
+  }
+  if (deliveryOptions.exportPdfPath?.trim()) {
+    formData.append('export_pdf_path', deliveryOptions.exportPdfPath.trim());
+  }
 
   const response = await fetch('/api/videos/upload', {
     method: 'POST',
@@ -300,8 +331,9 @@ export async function uploadVideo(
 export async function uploadVideoUrl(
   videoUrl: string,
   languageHint: 'auto' | 'en' | 'tl' = 'auto',
+  deliveryOptions: UploadDeliveryOptions = {},
 ): Promise<UploadVideoResponse> {
-  return fetchJson<UploadVideoResponse>('/api/videos/import', {
+  return fetchJson<UploadVideoResponse>('/api/videos/transcribe', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -309,6 +341,58 @@ export async function uploadVideoUrl(
     body: JSON.stringify({
       video_url: videoUrl,
       language_hint: languageHint,
+      notify_email: deliveryOptions.notifyEmail?.trim() || undefined,
+      export_pdf: Boolean(deliveryOptions.exportPdf),
+      export_pdf_path: deliveryOptions.exportPdfPath?.trim() || undefined,
+    }),
+  });
+}
+
+export async function generateVideoReport(
+  jobId: string,
+  target: 'summary' | 'transcript',
+  options?: { exportPdfPath?: string; showTimestamps?: boolean; useCustomSummary?: boolean },
+): Promise<VideoReportResponse> {
+  return fetchJson<VideoReportResponse>(`/api/videos/${jobId}/reports/${target}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      export_pdf_path: options?.exportPdfPath?.trim() || undefined,
+      show_timestamps: options?.showTimestamps ?? true,
+      use_custom_summary: options?.useCustomSummary,
+    }),
+  });
+}
+
+export async function fetchVideoReportBlob(jobId: string, target: 'summary' | 'transcript'): Promise<Blob> {
+  const response = await fetch(`/api/videos/${jobId}/reports/${target}`, {
+    headers: buildHeaders(),
+  });
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(getErrorMessage(errorPayload));
+  }
+  return response.blob();
+}
+
+export async function emailVideoReport(
+  jobId: string,
+  target: 'summary' | 'transcript',
+  recipientEmail: string,
+  options?: { exportPdfPath?: string; showTimestamps?: boolean; useCustomSummary?: boolean },
+): Promise<VideoReportResponse> {
+  return fetchJson<VideoReportResponse>(`/api/videos/${jobId}/reports/${target}/email`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      recipient_email: recipientEmail.trim(),
+      export_pdf_path: options?.exportPdfPath?.trim() || undefined,
+      show_timestamps: options?.showTimestamps ?? true,
+      use_custom_summary: options?.useCustomSummary,
     }),
   });
 }

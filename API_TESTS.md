@@ -8,6 +8,7 @@ Tested against:
 - Date: March 12, 2026
 
 Use `curl.exe`, not PowerShell's `curl` alias.
+For multipart upload on Windows, prefer `curl.exe` instead of `Invoke-RestMethod` because older PowerShell versions do not support `-Form`.
 
 ## Start The Stack
 
@@ -123,6 +124,25 @@ curl.exe -s -X POST http://localhost:8000/api/videos/upload `
   -F "language_hint=auto"
 ```
 
+What this does:
+- `file=@...` uploads the actual bytes to the API
+- use this when the API may be remote or when you want the most reliable option
+
+Absolute path upload example when the backend runs on the same machine and the host bridge mounts are enabled:
+
+```bash
+curl -s -X POST http://localhost:8000/api/videos/upload \
+  -H "X-API-Key: $apiKey" \
+  -F "file_path=/mnt/c/Users/zoen/Downloads/api-test-video.mp4" \
+  -F "language_hint=auto" \
+  -F "export_pdf=true" \
+  -F "export_pdf_path=/mnt/c/Users/zoen/Downloads/api-test-summary.pdf"
+```
+
+What this does:
+- `file_path=...` sends only the absolute path string
+- use this only when the backend is on the same machine and can see that path through the Docker bridge mounts
+
 Expected response shape:
 
 ```json
@@ -143,7 +163,7 @@ Direct MP4 example:
   language_hint = "auto"
 } | ConvertTo-Json -Compress | Set-Content import-url.json -Encoding utf8
 
-curl.exe -s -X POST http://localhost:8000/api/videos/import `
+curl.exe -s -X POST http://localhost:8000/api/videos/transcribe `
   -H "X-API-Key: $apiKey" `
   -H "Content-Type: application/json" `
   --data-binary "@import-url.json"
@@ -157,7 +177,7 @@ YouTube example:
   language_hint = "auto"
 } | ConvertTo-Json -Compress | Set-Content import-youtube.json -Encoding utf8
 
-curl.exe -s -X POST http://localhost:8000/api/videos/import `
+curl.exe -s -X POST http://localhost:8000/api/videos/transcribe `
   -H "X-API-Key: $apiKey" `
   -H "Content-Type: application/json" `
   --data-binary "@import-youtube.json"
@@ -172,6 +192,12 @@ Rules:
 - must be public to "Anyone with the link"
 - folder links are rejected
 - private or broken links will fail during processing with a clear `error_message`
+- `export_pdf_path` can be:
+  - a logical relative path inside managed report storage
+  - an absolute Windows path like `C:\Users\zoen\Downloads\meeting-summary.pdf`
+  - an absolute WSL path like `/mnt/c/Users/zoen/Downloads/meeting-summary.pdf`
+  - an absolute Linux path like `/home/zoen/Downloads/meeting-summary.pdf`
+- absolute paths work only when the backend can see them through the configured host bridge mounts
 
 Example payload shape:
 
@@ -179,9 +205,12 @@ Example payload shape:
 @{
   video_url = "https://drive.google.com/file/d/<file-id>/view?usp=sharing"
   language_hint = "auto"
+  notify_email = "recipient@example.com"
+  export_pdf = $true
+  export_pdf_path = "reports\meeting-summary.pdf"
 } | ConvertTo-Json -Compress | Set-Content import-gdrive.json -Encoding utf8
 
-curl.exe -s -X POST http://localhost:8000/api/videos/import `
+curl.exe -s -X POST http://localhost:8000/api/videos/transcribe `
   -H "X-API-Key: $apiKey" `
   -H "Content-Type: application/json" `
   --data-binary "@import-gdrive.json"
@@ -326,7 +355,7 @@ Verified in this session:
 - `POST /api/auth/login`
 - `POST /api/auth/api-keys`
 - `GET /api/videos` using `X-API-Key`
-- `POST /api/videos/import` using `X-API-Key`
+- `POST /api/videos/transcribe` using `X-API-Key`
 - `POST /api/videos/{job_id}/summary/regenerate`
 - `POST /api/videos/{job_id}/retry` for a failed Google Drive import
 - invalid Google Drive retry now re-queues and fails with the real Drive access error instead of a local-file-missing error

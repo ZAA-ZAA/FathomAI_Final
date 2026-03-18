@@ -30,7 +30,10 @@ class CustomSummaryService:
         summary = str(payload.get("summary", "")).strip()
         if not summary:
             raise RuntimeError("Custom summary generation returned an empty summary")
-        return CustomSummaryResponse(summary=summary)
+        return CustomSummaryResponse(
+            summary=summary,
+            action_items=self._normalize_action_items(payload.get("action_items", [])),
+        )
 
     def _build_messages(self, request: CustomSummaryRequest) -> list[dict[str, str]]:
         context_lines = [
@@ -38,7 +41,8 @@ class CustomSummaryService:
             "Follow the user's instruction exactly, but stay grounded in the transcript.",
             "The transcript may include English, Tagalog, or code-switching.",
             "If the requested topic is not covered by the transcript, say so clearly.",
-            "Return JSON with one key: summary.",
+            "Return JSON with keys: summary, action_items.",
+            "Action items must be an array of concrete follow-up tasks related to the focused instruction.",
         ]
         if request.video_title:
             context_lines.append(f"Video title: {request.video_title}")
@@ -52,3 +56,13 @@ class CustomSummaryService:
                 "content": f"Instruction:\n{request.instruction.strip()}\n\nTranscript:\n{request.transcript.strip()}",
             },
         ]
+
+    def _normalize_action_items(self, action_items: object) -> list[str]:
+        if not isinstance(action_items, list):
+            return []
+        normalized: list[str] = []
+        for item in action_items:
+            text = str(item).strip()
+            if text:
+                normalized.append(text)
+        return normalized

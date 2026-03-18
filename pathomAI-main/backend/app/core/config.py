@@ -37,6 +37,11 @@ class Settings:
     r2_access_key_id: str = os.getenv("R2_ACCESS_KEY_ID", "").strip()
     r2_secret_access_key: str = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
     r2_key_prefix: str = os.getenv("R2_KEY_PREFIX", "videos").strip().strip("/")
+    gmail_from: str = os.getenv("GMAIL_FROM", "").strip()
+    gmail_app_password: str = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+    client_windows_root: str = os.getenv("CLIENT_WINDOWS_ROOT", r"C:\Users").strip()
+    client_wsl_windows_root: str = os.getenv("CLIENT_WSL_WINDOWS_ROOT", "/mnt/c/Users").strip().rstrip("/")
+    client_linux_root: str = os.getenv("CLIENT_LINUX_ROOT", "/home").strip().rstrip("/")
     cors_origins: tuple[str, ...] = (
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -47,6 +52,9 @@ class Settings:
     storage_root: Path = field(init=False)
     upload_dir: Path = field(init=False)
     audio_dir: Path = field(init=False)
+    export_dir: Path = field(init=False)
+    host_mount_windows_root: Path = field(init=False)
+    host_mount_linux_root: Path = field(init=False)
     frontend_dist_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -55,11 +63,15 @@ class Settings:
         self.storage_root = Path(os.getenv("STORAGE_DIR", backend_root / "storage"))
         self.upload_dir = self.storage_root / "uploads"
         self.audio_dir = self.storage_root / "audio"
+        self.export_dir = self.storage_root / "exports"
+        self.host_mount_windows_root = Path(os.getenv("HOST_MOUNT_WINDOWS_ROOT", "/host/windows"))
+        self.host_mount_linux_root = Path(os.getenv("HOST_MOUNT_LINUX_ROOT", "/host/linux"))
         default_frontend_dist = backend_root.parent / "dist"
         self.frontend_dist_dir = Path(os.getenv("FRONTEND_DIST_DIR", default_frontend_dist))
 
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+        self.export_dir.mkdir(parents=True, exist_ok=True)
 
         if self.video_storage_provider not in {"local", "r2"}:
             raise ValueError("VIDEO_STORAGE_PROVIDER must be either 'local' or 'r2'")

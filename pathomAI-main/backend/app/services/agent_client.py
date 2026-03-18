@@ -115,7 +115,7 @@ def request_custom_summary(
     instruction: str,
     video_title: str,
     source_language: str | None,
-) -> CustomSummaryResponse:
+) -> AgentCustomSummaryResult:
     if not transcript.strip():
         raise AgentServiceError("Transcript is empty; custom summary is unavailable")
 

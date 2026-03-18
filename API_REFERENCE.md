@@ -43,12 +43,27 @@ API keys are tenant-scoped through the user that created them. API requests and 
   - List the current tenant's jobs
 - `GET /api/videos/{job_id}`
   - Get full job detail
+  - Includes report/email status under `video_metadata.reports` when available
 - `GET /api/videos/{job_id}/source`
   - Stream the locally stored source video if present
 - `POST /api/videos/upload`
   - Upload a local video file
+  - Multipart supports either `file` or `file_path`
+  - `file` sends the file bytes in the request and is the safer default for local or remote APIs
+  - `file_path` sends only an absolute path string and works only when the backend can directly read that host path
+  - Optional fields: `notify_email`, `export_pdf`, `export_pdf_path`
+- `POST /api/videos/transcribe`
+  - Import from a supported URL and queue transcription/analysis
+  - Optional fields: `notify_email`, `export_pdf`, `export_pdf_path`
+  - `export_pdf_path` can be a relative logical path or an allowed absolute Windows, WSL, or Linux path
 - `POST /api/videos/import`
-  - Import from a supported URL
+  - Legacy alias for `POST /api/videos/transcribe`
+- `POST /api/videos/{job_id}/reports/{target}`
+  - Generate and store a `summary` or `transcript` PDF
+- `GET /api/videos/{job_id}/reports/{target}`
+  - Download a stored `summary` or `transcript` PDF
+- `POST /api/videos/{job_id}/reports/{target}/email`
+  - Generate the selected report and send it by Gmail
 - `POST /api/videos/{job_id}/retry`
   - Retry a failed job
 
@@ -56,6 +71,7 @@ API keys are tenant-scoped through the user that created them. API requests and 
 
 - `POST /api/videos/{job_id}/summary/regenerate`
   - Generate a transcript-grounded summary for a specific instruction
+  - Returns focused `summary` plus focused `action_items`
   - Example use: "Only summarize the ingredients and steps for the second dish"
 
 ## Video Chat

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, StringConstraints
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, StringConstraints, model_validator
 from typing_extensions import Annotated
 
 
@@ -75,11 +75,23 @@ class VideoUploadResponse(BaseModel):
     id: str
     status: str
     message: str
+    notify_email: EmailStr | None = None
+    export_pdf: bool = False
+    export_pdf_path: str | None = None
 
 
 class VideoUrlUploadRequest(BaseModel):
     video_url: HttpUrl
     language_hint: str = "auto"
+    notify_email: EmailStr | None = None
+    export_pdf: bool = False
+    export_pdf_path: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
+
+    @model_validator(mode="after")
+    def validate_pdf_options(self):
+        if self.export_pdf_path and not self.export_pdf:
+            raise ValueError("export_pdf must be true when export_pdf_path is provided")
+        return self
 
 
 class VideoJobSummary(BaseModel):
@@ -122,6 +134,7 @@ class AgentAnalysisResult(BaseModel):
 
 class AgentCustomSummaryResult(BaseModel):
     summary: str
+    action_items: list[str] = Field(default_factory=list)
 
 
 class ChatMessageInput(BaseModel):
@@ -163,8 +176,30 @@ class CustomSummaryRequest(BaseModel):
 
 class CustomSummaryResponse(BaseModel):
     summary: str
+    action_items: list[str] = Field(default_factory=list)
     instruction: str
     updated_at: datetime
+
+
+class VideoReportRequest(BaseModel):
+    export_pdf_path: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=500)] = None
+    show_timestamps: bool = True
+    use_custom_summary: bool | None = None
+
+
+class VideoReportEmailRequest(VideoReportRequest):
+    recipient_email: EmailStr
+
+
+class VideoReportResponse(BaseModel):
+    target: str
+    message: str
+    saved_path: str | None = None
+    storage_path: str | None = None
+    filename: str | None = None
+    email_status: str | None = None
+    emailed_to: EmailStr | None = None
+    generated_at: datetime | None = None
 
 
 class TranscriptionResult(BaseModel):
